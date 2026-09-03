@@ -1,8 +1,8 @@
 import std/[os, posix, strutils, sequtils]
-import multiplexer/[daemon, client, protocol, session]
+import mpxlib/[daemon, client, protocol, session]
 
 const
-  Version = staticRead("../multiplexer.nimble").splitLines.filterIt(it.startsWith("version"))[0].split('=')[1].strip().strip(chars={' ','"'})
+  Version = staticRead("../mpx.nimble").splitLines.filterIt(it.startsWith("version"))[0].split('=')[1].strip().strip(chars={' ','"'})
 
 proc die(code: int, msg: string) =
   stderr.writeLine "mpx: " & msg

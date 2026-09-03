@@ -10,8 +10,8 @@ no escape sequence mangling, no scrollback theft.
 nimble install
 ```
 
-This installs two binaries: `multiplexer` (library + full CLI) and `mpx` (unixy
-short command).
+This installs two binaries: `mpx` (the unixy short command) and `mpxcli`
+(legacy full CLI, same thing with stricter argument order).
 
 ## Local usage
 

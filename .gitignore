@@ -1,4 +1,5 @@
-multiplexer
+mpx
+mpxcli
 build/
 example/example
 tests/test1

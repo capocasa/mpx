@@ -1,4 +1,4 @@
-# multiplexer example: full session flow
+# mpx example: full session flow
 #
 # Run with: nimble example
 
@@ -11,13 +11,13 @@ const
   RuntimeDir = "/tmp"
 
 proc cleanup() =
-  discard execCmd("pkill -f 'multiplexer daemon " & Session & "' 2>/dev/null")
+  discard execCmd("pkill -f 'mpx daemon " & Session & "' 2>/dev/null")
   removeFile(RuntimeDir / "mpx" / Session & ".sock")
 
 cleanup()
 
 # Start daemon in background, detached
-let daemon = startProcess("./multiplexer", args=["daemon", Session, "/bin/cat"],
+let daemon = startProcess("./mpx", args=["daemon", Session, "/bin/cat"],
                           options={poDaemon})
 sleep(2000)  # Give daemon more time to create socket
 
@@ -32,12 +32,12 @@ doAssert lstat(RuntimeDir / "mpx" / Session & ".sock", sockInfo) == 0, "socket n
 echo "example: daemon started, socket exists"
 
 # Attach a client, send input, capture output
-let (output, _) = execCmdEx("(echo 'hello from example'; sleep 1) | timeout 3 ./multiplexer attach " & Session)
+let (output, _) = execCmdEx("(echo 'hello from example'; sleep 1) | timeout 3 ./mpx attach " & Session)
 doAssert "hello from example" in output, "expected echo in output, got: " & output
 echo "example: client attach and echo verified"
 
 # Verify snapshot on second attach (should contain previous output)
-let (snap, _) = execCmdEx("timeout 2 ./multiplexer attach " & Session & " < /dev/null")
+let (snap, _) = execCmdEx("timeout 2 ./mpx attach " & Session & " < /dev/null")
 doAssert "hello from example" in snap, "snapshot missing previous output"
 echo "example: snapshot on reattach verified"
 

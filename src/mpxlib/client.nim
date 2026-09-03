@@ -1,5 +1,5 @@
 import std/[posix, termios, selectors]
-import multiplexer/[protocol, pty]
+import mpxlib/[protocol, pty]
 
 proc runClientAt*(path: string)
 

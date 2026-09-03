@@ -1,12 +1,12 @@
 import std/[os, posix]
-import multiplexer/[daemon, client, protocol]
+import mpxlib/[daemon, client, protocol]
 
 proc usage() =
   echo "Usage:"
-  echo "  multiplexer daemon <session> [cmd]   # start daemon"
-  echo "  multiplexer attach <session>         # attach to session"
-  echo "  multiplexer new <session> [cmd]      # daemon in background + attach"
-  echo "  multiplexer relay <host> <session>   # attach via SSH tunnel"
+  echo "  mpxcli daemon <session> [cmd]   # start daemon"
+  echo "  mpxcli attach <session>         # attach to session"
+  echo "  mpxcli new <session> [cmd]      # daemon in background + attach"
+  echo "  mpxcli relay <host> <session>   # attach via SSH tunnel"
   quit(1)
 
 proc main() =
