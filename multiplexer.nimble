@@ -10,3 +10,4 @@ bin           = @["multiplexer"]
 # Dependencies
 
 requires "nim >= 2.2.10"
+requires "ttty >= 0.5.1"

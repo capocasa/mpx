@@ -38,11 +38,18 @@ proc runClient*(sessionName: string) =
 
   var sel = newSelector[SocketHandle]()
   sel.registerHandle(fd, {Event.Read}, fd)
-  sel.registerHandle(SocketHandle(0), {Event.Read}, SocketHandle(0))
+  
+  # Try to register stdin; may fail if stdin is not selectable (e.g. /dev/null)
+  var stdinRegistered = false
+  try:
+    sel.registerHandle(SocketHandle(0), {Event.Read}, SocketHandle(0))
+    stdinRegistered = true
+  except IOSelectorsException:
+    discard
 
   var running = true
   while running:
-    let events = sel.select(-1)
+    let events = sel.select(if stdinRegistered: -1 else: 100)
     for ev in events:
       if ev.fd == 0:
         # stdin -> daemon
@@ -66,6 +73,15 @@ proc runClient*(sessionName: string) =
             discard
         except IOError:
           running = false
+    # If stdin not registered, poll it manually with non-blocking read
+    if not stdinRegistered:
+      var buf: array[4096, byte]
+      let fl = fcntl(0, F_GETFL)
+      discard fcntl(0, F_SETFL, fl or O_NONBLOCK)
+      let n = posix.read(0, addr buf[0], buf.len)
+      discard fcntl(0, F_SETFL, fl)
+      if n > 0:
+        sendMsg(fd, mkInput, buf[0..<n])
 
   # Restore terminal
   discard tcsetattr(0, TCSADRAIN, addr oldTermios)

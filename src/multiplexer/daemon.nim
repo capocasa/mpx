@@ -1,5 +1,6 @@
 import std/[posix, os, strutils, selectors]
-import multiplexer/[pty, protocol]
+import multiplexer/[pty, protocol, snapshot]
+import ttty/terminal
 
 type
   Client = object
@@ -11,24 +12,31 @@ type
     pty: Pty
     clients: seq[Client]
     running: bool
+    term: Terminal  # ttty side cache for attach snapshots
 
 proc newSession(name, cmd: string): Session =
   result.name = name
   result.pty = openPty(cmd)
   result.running = true
+  result.term = newTerminal(80, 24, 1000)
 
 proc removeClient(session: var Session, fd: SocketHandle) =
-  for i in 0..<session.clients.len:
+  var i = 0
+  while i < session.clients.len:
     if session.clients[i].fd == fd:
       session.clients.delete(i)
-      break
+    else:
+      inc i
 
 proc broadcast(session: var Session, kind: MsgKind, payload: openArray[byte]) =
-  for client in session.clients.mitems:
+  var i = 0
+  while i < session.clients.len:
+    let client = session.clients[i]
     try:
       sendMsg(client.fd, kind, payload)
+      inc i
     except IOError:
-      discard
+      session.clients.delete(i)
 
 proc handleClientMsg(session: var Session, fd: SocketHandle, kind: MsgKind, payload: seq[byte]) =
   case kind
@@ -81,6 +89,9 @@ proc runDaemon*(sessionName, cmd: string) =
         # New client
         let clientFd = accept(listenFd, nil, nil)
         if clientFd != SocketHandle(-1):
+          # Send snapshot of current screen to new client
+          let snap = renderGrid(session.term.grid, 80, 24)
+          sendMsg(clientFd, mkOutput, snap.toOpenArrayByte(0, snap.len-1))
           session.clients.add(Client(fd: clientFd, controlling: session.clients.len == 0))
           sel.registerHandle(clientFd, {Event.Read}, clientFd)
           echo "daemon: client attached, fd=", clientFd.cint
@@ -89,6 +100,8 @@ proc runDaemon*(sessionName, cmd: string) =
         var buf: array[4096, byte]
         let n = session.pty.read(addr buf[0], buf.len)
         if n > 0:
+          # Feed ttty side cache
+          session.term.write(cast[string](buf[0..<n]))
           session.broadcast(mkOutput, buf[0..<n])
         elif n == 0:
           # Child exited
