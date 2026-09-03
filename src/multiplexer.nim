@@ -1,4 +1,4 @@
-import std/[os, posix, strutils]
+import std/[os, posix]
 import multiplexer/[daemon, client, protocol]
 
 proc usage() =

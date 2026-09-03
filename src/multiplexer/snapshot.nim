@@ -1,4 +1,4 @@
-import std/[strutils, unicode]
+import std/[strutils]
 import ttty/grid
 
 proc renderGrid*(grid: Grid, width, height: int): string =

@@ -1,4 +1,4 @@
-import std/[posix, os, termios, selectors]
+import std/[posix, termios, selectors]
 import multiplexer/[protocol, pty]
 
 proc runClientAt*(path: string)

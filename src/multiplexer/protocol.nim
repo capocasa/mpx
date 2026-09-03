@@ -1,4 +1,4 @@
-import std/[posix, os, strutils]
+import std/[posix, os]
 
 type
   MsgKind* = enum
