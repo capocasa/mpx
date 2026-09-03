@@ -39,5 +39,7 @@ proc socketPath*(sessionName: string): string =
 
 proc removeSocket*(sessionName: string) =
   let path = socketPath(sessionName)
-  if fileExists(path):
+  try:
     removeFile(path)
+  except OSError:
+    discard  # Ignore if file doesn't exist or can't be removed

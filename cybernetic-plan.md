@@ -17,8 +17,8 @@ Not begun. `~/p/multiplexer` is empty. `~/p/ttty` (v0.5.1) exists and provides t
 - [x] 5. Integrate `ttty` side cache: daemon feeds all PTY output to `ttty` grid. On attach, render grid to client before live forwarding. (Done: snapshot.nim renders grid to ANSI, daemon sends on attach. Second client sees full screen state.)
 - [x] 6. Multi-client broadcast: daemon forwards output to all attached clients. Input from controlling client only. Resize from controlling client. (Done: verified, client B input ignored, both see A's output.)
 - [x] 7. SSH relay: client mode that connects to remote daemon over SSH. Reuses same protocol. (Done: relay command forks ssh -L tunnel, attaches to forwarded socket. Untestable in sandbox without remote host.)
-- [ ] 8. Example directory exercising full flow. `nimble test` drives example end-to-end. (In progress)
-- [ ] 9. Final review: build, test, `git diff`, verify all steps completed.
+- [x] 8. Example directory exercising full flow. `nimble test` drives example end-to-end. (Done: example/example.nim tests daemon start, client attach, echo roundtrip, snapshot on reattach. nimble test passes.)
+- [ ] 9. Final review: build, test, `git diff`, verify all steps completed. (In progress)
 
 ## Decisions
 

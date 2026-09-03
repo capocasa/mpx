@@ -1,12 +1,36 @@
-# This is just an example to get you started. You may wish to put all of your
-# tests into a single file, or separate them into multiple `test1`, `test2`
-# etc. files (better names are recommended, just make sure the name starts with
-# the letter 't').
-#
-# To run these tests, simply execute `nimble test`.
+import std/[unittest, os, osproc, strutils]
+import multiplexer/[protocol, pty, snapshot]
+import ttty/terminal
 
-import unittest
+# Protocol tests
+test "socketPath":
+  putEnv("XDG_RUNTIME_DIR", "/tmp")
+  let path = socketPath("test")
+  check "mpx" in path
+  check "test.sock" in path
 
-import multiplexer
-test "can add":
-  check add(5, 5) == 10
+# PTY tests
+test "pty roundtrip":
+  let p = openPty("/bin/cat", [], 80, 24)
+  let msg = "hello\n"
+  discard p.write(msg.cstring, msg.len)
+  sleep(50)
+  var buf: array[256, char]
+  let n = p.read(addr buf, buf.len)
+  check n > 0
+  let got = cast[string](buf[0..<n])
+  check "hello" in got
+  p.close()
+
+# Snapshot tests
+test "renderGrid empty":
+  let term = newTerminal(80, 24, 0)
+  let snap = renderGrid(term.grid, 80, 24)
+  check snap.startsWith("\x1b[2J\x1b[H")
+  check snap.endsWith("\x1b[0m")
+
+test "renderGrid with content":
+  let term = newTerminal(80, 24, 0)
+  term.write("hello")
+  let snap = renderGrid(term.grid, 80, 24)
+  check "hello" in snap
