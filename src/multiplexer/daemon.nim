@@ -1,11 +1,12 @@
 import std/[posix, os, strutils, selectors]
-import multiplexer/[pty, protocol, snapshot]
-import ttty/terminal
+import multiplexer/[pty, protocol]
+import ttty/[terminal, grid]
 
 type
   Client = object
     fd: SocketHandle
     controlling: bool
+    snapshotSent: bool
 
   Session = object
     name: string
@@ -18,7 +19,7 @@ proc newSession(name, cmd: string): Session =
   result.name = name
   result.pty = openPty(cmd)
   result.running = true
-  result.term = newTerminal(80, 24, 1000)
+  result.term = newTerminal(80, 24, 10000)  # larger scrollback
 
 proc removeClient(session: var Session, fd: SocketHandle) =
   var i = 0
@@ -59,8 +60,14 @@ proc handleClientMsg(session: var Session, fd: SocketHandle, kind: MsgKind, payl
         let w = (payload[0].uint16 shl 8) or payload[1].uint16
         let h = (payload[2].uint16 shl 8) or payload[3].uint16
         session.pty.setSize(w, h)
+        session.term.grid.resize(w.int, h.int)
         # Broadcast resize to all clients so they can adapt
         session.broadcast(mkResize, payload)
+    # Send snapshot to newly attached client on first resize
+    if not session.clients[clientIdx].snapshotSent:
+      let snap = session.term.grid.renderAnsi(session.term.grid.width, session.term.grid.height)
+      sendMsg(fd, mkOutput, snap.toOpenArrayByte(0, snap.len-1))
+      session.clients[clientIdx].snapshotSent = true
   of mkDetach:
     session.removeClient(fd)
     discard posix.close(fd)
@@ -101,9 +108,6 @@ proc runDaemon*(sessionName, cmd: string) =
         # New client
         let clientFd = accept(listenFd, nil, nil)
         if clientFd != SocketHandle(-1):
-          # Send snapshot of current screen to new client
-          let snap = renderGrid(session.term.grid, 80, 24)
-          sendMsg(clientFd, mkOutput, snap.toOpenArrayByte(0, snap.len-1))
           session.clients.add(Client(fd: clientFd, controlling: session.clients.len == 0))
           sel.registerHandle(clientFd, {Event.Read}, clientFd)
           echo "daemon: client attached, fd=", clientFd.cint

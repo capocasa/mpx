@@ -1,6 +1,6 @@
 import std/[unittest, os, osproc, strutils]
-import multiplexer/[protocol, pty, snapshot]
-import ttty/terminal
+import multiplexer/[protocol, pty]
+import ttty/[terminal, grid]
 
 # Protocol tests
 test "socketPath":
@@ -22,15 +22,24 @@ test "pty roundtrip":
   check "hello" in got
   p.close()
 
-# Snapshot tests
-test "renderGrid empty":
+# Snapshot tests (now in ttty)
+test "renderAnsi empty":
   let term = newTerminal(80, 24, 0)
-  let snap = renderGrid(term.grid, 80, 24)
+  let snap = term.grid.renderAnsi(80, 24)
   check snap.startsWith("\x1b[2J\x1b[H")
   check snap.endsWith("\x1b[0m")
 
-test "renderGrid with content":
+test "renderAnsi with content":
   let term = newTerminal(80, 24, 0)
   term.write("hello")
-  let snap = renderGrid(term.grid, 80, 24)
+  let snap = term.grid.renderAnsi(80, 24)
+  check "hello" in snap
+
+test "grid resize":
+  let term = newTerminal(80, 24, 0)
+  term.write("hello")
+  term.grid.resize(40, 10)
+  check term.grid.width == 40
+  check term.grid.height == 10
+  let snap = term.grid.renderAnsi(40, 10)
   check "hello" in snap

@@ -35,8 +35,11 @@ proc runClientAt*(path: string) =
   # Send terminal size
   var win: Winsize
   discard ioctl(1, TIOCGWINSZ, addr win)
-  let w = win.ws_col
-  let h = win.ws_row
+  var w = win.ws_col
+  var h = win.ws_row
+  if w == 0 or h == 0:
+    w = 80
+    h = 24
   sendMsg(fd, mkResize, [byte(w shr 8), byte(w and 0xff), byte(h shr 8), byte(h and 0xff)])
 
   var sel = newSelector[SocketHandle]()
@@ -59,7 +62,12 @@ proc runClientAt*(path: string) =
         var buf: array[4096, byte]
         let n = posix.read(0, addr buf[0], buf.len)
         if n > 0:
-          sendMsg(fd, mkInput, buf[0..<n])
+          # Check for Ctrl+D (0x04) to detach
+          if n == 1 and buf[0] == 0x04:
+            sendMsg(fd, mkDetach)
+            running = false
+          else:
+            sendMsg(fd, mkInput, buf[0..<n])
         else:
           running = false
       elif ev.fd == fd.cint:

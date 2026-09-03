@@ -18,7 +18,7 @@ Not begun. `~/p/multiplexer` is empty. `~/p/ttty` (v0.5.1) exists and provides t
 - [x] 6. Multi-client broadcast: daemon forwards output to all attached clients. Input from controlling client only. Resize from controlling client. (Done: verified, client B input ignored, both see A's output.)
 - [x] 7. SSH relay: client mode that connects to remote daemon over SSH. Reuses same protocol. (Done: relay command forks ssh -L tunnel, attaches to forwarded socket. Untestable in sandbox without remote host.)
 - [x] 8. Example directory exercising full flow. `nimble test` drives example end-to-end. (Done: example/example.nim tests daemon start, client attach, echo roundtrip, snapshot on reattach. nimble test passes.)
-- [ ] 9. Final review: build, test, `git diff`, verify all steps completed. (In progress)
+- [x] 9. Final review: build, test, `git diff`, verify all steps completed. (Done: build clean, tests pass, example passes, binaries gitignored, 7 commits total.)
 
 ## Decisions
 
