@@ -1,9 +1,12 @@
 import std/[posix, os, termios, selectors]
 import multiplexer/[protocol, pty]
 
+proc runClientAt*(path: string)
+
 proc runClient*(sessionName: string) =
-  let path = socketPath(sessionName)
-  
+  runClientAt(socketPath(sessionName))
+
+proc runClientAt*(path: string) =
   let fd = posix.socket(AF_UNIX, SOCK_STREAM, 0)
   if fd == SocketHandle(-1):
     raise newException(OSError, "socket failed")

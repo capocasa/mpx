@@ -6,6 +6,7 @@ proc usage() =
   echo "  multiplexer daemon <session> [cmd]   # start daemon"
   echo "  multiplexer attach <session>         # attach to session"
   echo "  multiplexer new <session> [cmd]      # daemon in background + attach"
+  echo "  multiplexer relay <host> <session>   # attach via SSH tunnel"
   quit(1)
 
 proc main() =
@@ -31,6 +32,30 @@ proc main() =
       # Give daemon time to start
       sleep(100)
       runClient(sessionName)
+  of "relay":
+    if paramCount() < 3:
+      usage()
+    let host = paramStr(2)
+    let remoteSession = paramStr(3)
+    # Create local socket path for forwarded connection
+    let localPath = "/tmp/mpx_relay_" & remoteSession & ".sock"
+    let remotePath = socketPath(remoteSession)
+    # Remove stale socket
+    if fileExists(localPath):
+      removeFile(localPath)
+    # Start SSH tunnel in background
+    let tunnelPid = fork()
+    if tunnelPid == 0:
+      discard execvp("ssh", @["ssh", "-N", "-L", localPath & ":" & remotePath, host].allocCStringArray)
+      quit(1)
+    # Give tunnel time to establish
+    sleep(500)
+    # Attach to forwarded socket
+    runClientAt(localPath)
+    # Cleanup: kill tunnel
+    discard kill(tunnelPid, SIGTERM)
+    if fileExists(localPath):
+      removeFile(localPath)
   else:
     usage()
 
