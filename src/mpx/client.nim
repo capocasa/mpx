@@ -78,7 +78,7 @@ proc runClientAt*(path: string) =
           of mkOutput:
             discard posix.write(1, unsafeAddr payload[0], payload.len)
           of mkResize:
-            # Terminal was resized by controlling client, we just ignore
+            # Another client resized; we just ignore
             discard
           else:
             discard
