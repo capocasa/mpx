@@ -1,5 +1,5 @@
 import std/[unittest, os, osproc, strutils]
-import mpxlib/[protocol, pty, session]
+import mpx/[protocol, pty, session]
 import ttty/[terminal, grid]
 
 # Protocol tests

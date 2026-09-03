@@ -1,5 +1,5 @@
 import std/[os, posix, strutils, sequtils]
-import mpxlib/[daemon, client, protocol, session]
+import mpx/[daemon, client, protocol, session]
 
 const
   Version = staticRead("../mpx.nimble").splitLines.filterIt(it.startsWith("version"))[0].split('=')[1].strip().strip(chars={' ','"'})

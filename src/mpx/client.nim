@@ -1,5 +1,5 @@
 import std/[posix, termios, selectors]
-import mpxlib/[protocol, pty]
+import mpx/[protocol, pty]
 
 proc runClientAt*(path: string)
 

@@ -1,5 +1,5 @@
 import std/[os, posix]
-import mpxlib/[daemon, client, protocol]
+import mpx/[daemon, client, protocol]
 
 proc usage() =
   echo "Usage:"

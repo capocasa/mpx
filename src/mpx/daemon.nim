@@ -1,5 +1,5 @@
 import std/[posix, os, strutils, selectors]
-import mpxlib/[pty, protocol]
+import mpx/[pty, protocol]
 import ttty/[terminal, grid]
 
 type
