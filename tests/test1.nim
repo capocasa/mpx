@@ -1,5 +1,5 @@
 import std/[unittest, os, osproc, strutils]
-import multiplexer/[protocol, pty]
+import multiplexer/[protocol, pty, session]
 import ttty/[terminal, grid]
 
 # Protocol tests
@@ -8,6 +8,31 @@ test "socketPath":
   let path = socketPath("test")
   check "mpx" in path
   check "test.sock" in path
+
+test "resolveSession named passes through":
+  check resolveSession("work") == "work"
+
+test "resolveSession auto number":
+  let dir = getTempDir() / "mpx_test_sessions"
+  removeDir(dir)
+  createDir(dir / "mpx")
+  putEnv("XDG_RUNTIME_DIR", dir)
+  check resolveSession("") == "1"
+  writeFile(dir / "mpx" / "1.sock", "")
+  writeFile(dir / "mpx" / "foo.sock", "")
+  check resolveSession("") == "2"
+  writeFile(dir / "mpx" / "2.sock", "")
+  check resolveSession("") == "3"
+  removeDir(dir)
+
+test "requireSession rejects empty":
+  expect(ValueError):
+    discard requireSession("")
+  check requireSession("x") == "x"
+
+test "isActive false for missing socket":
+  putEnv("XDG_RUNTIME_DIR", getTempDir())
+  check not isActive("definitely_not_a_session_xyz")
 
 # PTY tests
 test "pty roundtrip":

@@ -142,5 +142,6 @@ proc runDaemon*(sessionName, cmd: string) =
     discard posix.close(client.fd)
   discard posix.close(listenFd)
   removeSocket(sessionName)
+  removeLock(sessionName)
   session.pty.close()
   echo "daemon: exited"

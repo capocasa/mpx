@@ -38,8 +38,16 @@ proc socketPath*(sessionName: string): string =
   result = result / sessionName & ".sock"
 
 proc removeSocket*(sessionName: string) =
+  ## Remove a stale socket. Never removes the session lock file: the daemon
+  ## calls this on startup, right after the parent claimed the id with it.
   let path = socketPath(sessionName)
   try:
     removeFile(path)
   except OSError:
     discard  # Ignore if file doesn't exist or can't be removed
+
+proc removeLock*(sessionName: string) =
+  try:
+    removeFile(socketPath(sessionName).changeFileExt("lock"))
+  except OSError:
+    discard

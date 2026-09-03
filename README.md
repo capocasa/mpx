@@ -19,6 +19,13 @@ short command).
 # Start a session named "main" running your shell
 mpx new main
 
+# Session names are optional. No name = next free number (1, 2, 3, ...)
+mpx new            # shell in session "1"
+mpx new htop       # htop in session "2"
+
+# Re-running `mpx new <name>` on an active session just attaches to it
+mpx new main
+
 # Or start daemon separately, then attach
 mpx daemon main
 mpx attach main
