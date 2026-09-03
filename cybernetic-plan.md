@@ -15,8 +15,8 @@ Not begun. `~/p/multiplexer` is empty. `~/p/ttty` (v0.5.1) exists and provides t
 - [x] 3. Unix socket server in `$XDG_RUNTIME_DIR/mpx/`. Protocol: attach, detach, resize, input, output. One client at first. (Done: daemon.nim + protocol.nim + client.nim, end-to-end verified with /bin/cat roundtrip.)
 - [x] 4. Client: connect to socket, put local terminal in raw mode, forward stdin to daemon, stdout from daemon. Restore terminal on exit. (Done: client.nim works, raw mode, EOF handling needs polish but functional.)
 - [x] 5. Integrate `ttty` side cache: daemon feeds all PTY output to `ttty` grid. On attach, render grid to client before live forwarding. (Done: snapshot.nim renders grid to ANSI, daemon sends on attach. Second client sees full screen state.)
-- [ ] 6. Multi-client broadcast: daemon forwards output to all attached clients. Input from controlling client only. Resize from controlling client. (In progress)
-- [ ] 7. SSH relay: client mode that connects to remote daemon over SSH. Reuses same protocol.
+- [x] 6. Multi-client broadcast: daemon forwards output to all attached clients. Input from controlling client only. Resize from controlling client. (Done: verified, client B input ignored, both see A's output.)
+- [ ] 7. SSH relay: client mode that connects to remote daemon over SSH. Reuses same protocol. (In progress)
 - [ ] 8. Example directory exercising full flow. `nimble test` drives example end-to-end.
 - [ ] 9. Final review: build, test, `git diff`, verify all steps completed.
 

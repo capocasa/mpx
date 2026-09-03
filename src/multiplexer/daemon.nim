@@ -39,16 +39,28 @@ proc broadcast(session: var Session, kind: MsgKind, payload: openArray[byte]) =
       session.clients.delete(i)
 
 proc handleClientMsg(session: var Session, fd: SocketHandle, kind: MsgKind, payload: seq[byte]) =
+  # Find client
+  var clientIdx = -1
+  for i, c in session.clients:
+    if c.fd == fd:
+      clientIdx = i
+      break
+  if clientIdx < 0: return
+  
   case kind
   of mkInput:
-    discard session.pty.write(unsafeAddr payload[0], payload.len)
+    # Only controlling client can send input
+    if session.clients[clientIdx].controlling:
+      discard session.pty.write(unsafeAddr payload[0], payload.len)
   of mkResize:
-    if payload.len >= 4:
-      let w = (payload[0].uint16 shl 8) or payload[1].uint16
-      let h = (payload[2].uint16 shl 8) or payload[3].uint16
-      session.pty.setSize(w, h)
-      # Broadcast resize to all clients so they can adapt
-      session.broadcast(mkResize, payload)
+    # Only controlling client can resize
+    if session.clients[clientIdx].controlling:
+      if payload.len >= 4:
+        let w = (payload[0].uint16 shl 8) or payload[1].uint16
+        let h = (payload[2].uint16 shl 8) or payload[3].uint16
+        session.pty.setSize(w, h)
+        # Broadcast resize to all clients so they can adapt
+        session.broadcast(mkResize, payload)
   of mkDetach:
     session.removeClient(fd)
     discard posix.close(fd)
