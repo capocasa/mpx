@@ -1,0 +1,13 @@
+[Unit]
+Description=Terminal multiplexer session %i
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/home/carlo/.nimble/bin/mpx daemon %i
+ExecStop=/home/carlo/.nimble/bin/mpx kill %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

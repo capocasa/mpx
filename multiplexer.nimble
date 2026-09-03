@@ -5,7 +5,7 @@ author        = "Carlo Capocasa"
 description   = "Transparent terminal multiplexer"
 license       = "MIT"
 srcDir        = "src"
-bin           = @["multiplexer"]
+bin           = @["multiplexer", "mpx"]
 
 # Dependencies
 
