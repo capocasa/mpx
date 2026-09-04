@@ -13,7 +13,6 @@ proc usage() =
   echo "  mpx daemon [session] [cmd]   # start daemon (default name: dir basename, ~ in homedir)"
   echo "  mpx attach <session>         # attach to session"
   echo "  mpx new [session] [cmd]      # daemon in background + attach"
-  echo "  mpx relay <host> <session>   # attach via SSH tunnel"
   echo "  mpx ls                       # list sessions"
   echo "  mpx kill <session>           # kill daemon and remove socket"
   echo "  mpx --version                # show version"
@@ -44,7 +43,7 @@ proc main() =
       sessionName = requireSession(sessionName)
     except ValueError:
       usage()
-  of "relay", "ls":
+  of "ls":
     discard
   else:
     usage()
@@ -66,30 +65,6 @@ proc main() =
       # Give daemon time to start
       sleep(100)
     runClient(sessionName)
-  of "relay":
-    if paramCount() < 3:
-      usage()
-    let host = paramStr(2)
-    let remoteSession = paramStr(3)
-    # Create local socket path for forwarded connection
-    let localPath = "/tmp/mpx_relay_" & remoteSession & ".sock"
-    let remotePath = socketPath(remoteSession)
-    # Remove stale socket
-    if fileExists(localPath):
-      removeFile(localPath)
-    # Start SSH tunnel in background
-    let tunnelPid = fork()
-    if tunnelPid == 0:
-      discard execvp("ssh", @["ssh", "-N", "-L", localPath & ":" & remotePath, host].allocCStringArray)
-      quit(1)
-    # Give tunnel time to establish
-    sleep(500)
-    # Attach to forwarded socket
-    runClientAt(localPath)
-    # Cleanup: kill tunnel
-    discard kill(tunnelPid, SIGTERM)
-    if fileExists(localPath):
-      removeFile(localPath)
   of "ls":
     # walkDir, not walkFiles: sockets are not regular files
     let dir = getEnv("XDG_RUNTIME_DIR", getEnv("TMPDIR", "/tmp")) / "mpx"

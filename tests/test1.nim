@@ -1,5 +1,5 @@
 import std/[unittest, os, osproc, strutils]
-import mpx/[protocol, pty, session, log]
+import mpx/[protocol, pty, session, log, config]
 import ttty/[terminal, grid]
 
 # Protocol tests
@@ -18,6 +18,59 @@ test "defaultName is cwd basename":
   setCurrentDir(getTempDir())
   check defaultName() == lastPathPart(getTempDir())
   setCurrentDir(realCwd)
+
+# Config tests
+suite "config":
+  setup:
+    let realCfg = getEnv("XDG_CONFIG_HOME")
+    let dir = getTempDir() / "mpx_test_config"
+    removeDir(dir)
+    createDir(dir / "mpx")
+    putEnv("XDG_CONFIG_HOME", dir)
+
+  teardown:
+    putEnv("XDG_CONFIG_HOME", realCfg)
+    removeDir(dir)
+
+  test "absent config file means defaults":
+    check loadConfig().listen == ""
+    check not loadConfig().log
+
+  test "parse listen and log":
+    let cfg = parseConfig("""
+# comment
+listen = 10.0.0.4:4534
+log = true
+""")
+    check cfg.listen == "10.0.0.4:4534"
+    check cfg.log
+
+  test "log off variants":
+    check not parseConfig("log = false").log
+    check not parseConfig("log = no").log
+    check not parseConfig("log = 0").log
+
+  test "unknown keys ignored":
+    let cfg = parseConfig("frobnicate = yes\nlisten = localhost:9000\n")
+    check cfg.listen == "localhost:9000"
+
+  test "loaded from config file":
+    writeFile(dir / "mpx" / "config", "listen = 127.0.0.1:4534\nlog = true\n")
+    let cfg = loadConfig()
+    check cfg.listen == "127.0.0.1:4534"
+    check cfg.log
+
+  test "parseListen splits host and port":
+    let (ip, port) = parseListen("10.0.0.4:4534")
+    check ip.address_v4 == [byte 10, 0, 0, 4]
+    check port == 4534
+
+  test "parseListen rejects junk":
+    expect(ValueError): discard parseListen("no-port-here")
+    expect(ValueError): discard parseListen("host:0")
+    expect(ValueError): discard parseListen("host:99999")
+    expect(ValueError): discard parseListen(":1234")
+    expect(ValueError): discard parseListen("10.0.0.4:notanumber")
 
 suite "resolveSession":
   setup:
@@ -64,18 +117,16 @@ suite "logging":
     let dir = getTempDir() / "mpx_test_data"
     removeDir(dir)
     putEnv("XDG_DATA_HOME", dir)
-    putEnv("MPX_LOG", "")
     let l = initLogger()
-    l.info "should not land anywhere"
+    l.info "hello log"
     l.close()
     check not dirExists(dir / "mpx")
 
-  test "enabled with MPX_LOG=1":
+  test "enabled via initLogger(true)":
     let dir = getTempDir() / "mpx_test_data"
     removeDir(dir)
     putEnv("XDG_DATA_HOME", dir)
-    putEnv("MPX_LOG", "1")
-    let l = initLogger()
+    let l = initLogger(true)
     l.info "hello log"
     l.close()
     check fileExists(l.path)

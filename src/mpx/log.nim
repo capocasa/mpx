@@ -1,6 +1,6 @@
 ## Logging for mpx.
 ##
-## Off by default. Enable with MPX_LOG=1: appends to
+## Off by default. Enable with `log = true` in the config file: appends to
 ## `$XDG_DATA_HOME/mpx/mpx-YYYY.log` (or `~/.local/share/mpx/...`).
 
 import std/[os, times]
@@ -14,9 +14,9 @@ proc logFilePath*(): string =
   let base = getEnv("XDG_DATA_HOME", getHomeDir() / ".local" / "share")
   base / "mpx" / "mpx-" & now().format("yyyy") & ".log"
 
-proc initLogger*(): Logger =
+proc initLogger*(enabled = false): Logger =
   result = Logger()
-  if getEnv("MPX_LOG") != "1":
+  if not enabled:
     return
   let path = logFilePath()
   try:

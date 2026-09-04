@@ -2,7 +2,7 @@
 #
 # Run with: nimble example
 
-import std/[os, osproc, strutils, posix]
+import std/[os, osproc, strutils, posix, strtabs]
 
 putEnv("XDG_RUNTIME_DIR", "/tmp")
 
@@ -26,7 +26,7 @@ if not daemon.running:
   echo "example: daemon failed to start"
   quit(1)
 
-# Verify socket exists (fileExists doesn't work for sockets on some systems)
+# Verify socket exists (fileExists doesn't work on sockets on some systems)
 var sockInfo: Stat
 doAssert lstat(RuntimeDir / "mpx" / Session & ".sock", sockInfo) == 0, "socket not created"
 echo "example: daemon started, socket exists"
@@ -53,7 +53,7 @@ for i in 1..20:
 doAssert dead, "daemon outlived child process"
 echo "example: session ends with child exit verified"
 
-# Default session name: no name = cwd basename, then a counter
+# Default session name: no name = dir basename, then a counter
 let bin = getCurrentDir() / "mpx"
 let workdir = getTempDir() / "mpx_example_cwd"
 removeDir(workdir)
@@ -87,36 +87,57 @@ echo "example: counter suffix on name collision verified"
 discard execCmd("pkill -f 'mpx daemon /bin/cat' 2>/dev/null")
 removeDir(workdir)
 
-# Logging: off by default, MPX_LOG=1 appends to $XDG_DATA_HOME/mpx/
+# Config: listen = host:port adds a TCP listener next to the unix socket.
+# Daemon-side and client-side dirs are deliberately different so the client
+# can only reach the session over TCP.
+let cfgDir = getTempDir() / "mpx_example_config"
+let daemonRt = getTempDir() / "mpx_example_rt"
+let clientRt = getTempDir() / "mpx_example_rt_empty"
 let dataDir = getTempDir() / "mpx_example_data"
-removeDir(dataDir)
-createDir(dataDir)
-putEnv("XDG_DATA_HOME", dataDir)
-putEnv("MPX_LOG", "1")
-discard startProcess(bin, args=["daemon", Session, "/bin/sleep", "30"],
+removeDir(cfgDir)
+removeDir(daemonRt)
+removeDir(clientRt)
+createDir(cfgDir / "mpx")
+createDir(daemonRt)
+createDir(clientRt)
+writeFile(cfgDir / "mpx" / "config", "listen = 127.0.0.1:4590\nlog = true\n")
+
+discard startProcess(bin, args=["daemon", "tcpdemo", "/bin/cat"],
+                     env={"XDG_CONFIG_HOME": cfgDir,
+                          "XDG_RUNTIME_DIR": daemonRt,
+                          "XDG_DATA_HOME": dataDir}.newStringTable,
                      options={poDaemon})
-var logPath = ""
+var tcpUp = false
 for i in 1..40:
   for f in walkFiles(dataDir / "mpx" / "*.log"):
-    logPath = f
-  if logPath.len > 0 and fileExists(logPath):
+    if "listening on tcp" in readFile(f):
+      tcpUp = true
+  if tcpUp:
     break
   sleep(250)
-doAssert logPath.len > 0, "no log file created with MPX_LOG=1"
-var logged = false
-for i in 1..20:
-  if "listening on" in readFile(logPath):
-    logged = true
-    break
-  sleep(250)
-doAssert logged, "daemon did not log 'listening on'"
-echo "example: MPX_LOG=1 writes daemon log verified"
-putEnv("MPX_LOG", "")
-discard execCmd("pkill -f 'mpx daemon " & Session & "' 2>/dev/null")
-cleanup()
-removeDir(dataDir)
-putEnv("XDG_DATA_HOME", "")
+doAssert tcpUp, "daemon never logged its tcp listener"
+echo "example: config file enables tcp listener verified"
 
-# Cleanup
+# Attach with the session socket hidden from the client: goes over TCP
+let (tcpOut, _) = execCmdEx("(echo 'hello over tcp'; sleep 1) | timeout 3 env XDG_CONFIG_HOME=" &
+                            cfgDir & " XDG_RUNTIME_DIR=" & clientRt & " " & bin & " attach tcpdemo")
+doAssert "hello over tcp" in tcpOut, "tcp attach failed, got: " & tcpOut
+echo "example: tcp attach by session name verified"
+
+# Wrong session name is rejected
+let (errOut, exitCode) = execCmdEx("(echo x; sleep 1) | timeout 3 env XDG_CONFIG_HOME=" &
+                                   cfgDir & " XDG_RUNTIME_DIR=" & clientRt & " " & bin &
+                                   " attach nosuchsession")
+doAssert exitCode != 0, "wrong session name should fail, got: " & errOut
+echo "example: wrong session name rejected verified"
+
+discard execCmd("pkill -f 'mpx daemon tcpdemo' 2>/dev/null")
+removeDir(cfgDir)
+removeDir(daemonRt)
+removeDir(clientRt)
+
+# Config file must not exist by default (no state written unless asked for)
+doAssert not fileExists(cfgDir), "example config cleanup failed"
+
 cleanup()
 echo "example: all passed"

@@ -44,14 +44,56 @@ mpx kill main
 When the program inside a session exits, the session ends and disappears
 from `mpx ls`.
 
-## Logging
+## Configuration
 
-Off by default. `MPX_LOG=1` makes the daemon append to
-`$XDG_DATA_HOME/mpx/mpx-YYYY.log`:
+No config file exists until you create one at
+`~/.config/mpx/config` (macOS: `~/Library/Application Support/mpx/config`,
+Windows: `%APPDATA%\mpx\config`). Without it, mpx runs on a unix socket
+and logs nothing.
 
 ```sh
-MPX_LOG=1 mpx new
+mkdir -p ~/.config/mpx
+cat > ~/.config/mpx/config <<'EOF'
+listen = 127.0.0.1:4534
+log = true
+EOF
 ```
+
+- `listen = host:port` also exposes every session over TCP. The port is a
+  base port: each session daemon takes the first free port at or above it
+  (first session 4534, second 4535, ...). Clients scan up from the base
+  port and pick their session by name.
+- `log = true` appends to `$XDG_DATA_HOME/mpx/mpx-YYYY.log`.
+
+## Remote usage
+
+Run the daemon on the host where the work happens, attach from anywhere
+that can reach the TCP port. No SSH involvement, no SSH dependency.
+
+Over wireguard (recommended, the traffic is otherwise unencrypted):
+
+```sh
+# On 10.0.0.4
+mpx daemon work
+
+# On your laptop, same config entry on both machines
+mpx attach work
+```
+
+Both sides need the same `listen` host in their config: the daemon binds
+it, the client scans it.
+
+Or forward a port manually through SSH if you must:
+
+```sh
+ssh -N -L 4534:127.0.0.1:4534 remotehost &
+mpx attach work   # with listen = 127.0.0.1:4534 locally
+```
+
+Session names gate TCP access: a client must name the session correctly
+to attach, but treat this as convenience, not a security boundary. Keep
+the listener on a private interface (wireguard, tailnet, localhost) and
+put real authentication in front if you need it.
 
 ## systemd
 
@@ -77,25 +119,6 @@ systemctl --user enable mpx@main
 ```
 
 The `%i` in the unit file is the session name. `mpx@main` = session "main".
-
-## Remote usage
-
-On the remote host, start a daemon:
-
-```sh
-mpx daemon work
-```
-
-On your local machine, attach via SSH tunnel:
-
-```sh
-mpx relay remotehost work
-```
-
-This forks `ssh -N -L /tmp/mpx_relay_work.sock:/run/user/1000/mpx/work.sock remotehost`
-and attaches to the forwarded socket. Requires key-based SSH auth (no password prompt).
-
-To stop, detach with Ctrl+D. The SSH tunnel dies with the client.
 
 ## How it works
 

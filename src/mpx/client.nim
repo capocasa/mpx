@@ -1,25 +1,33 @@
 import std/[posix, termios, selectors]
-import mpx/[protocol, pty]
-
-proc runClientAt*(path: string)
+import mpx/[protocol, config, pty]
 
 proc runClient*(sessionName: string) =
-  runClientAt(socketPath(sessionName))
-
-proc runClientAt*(path: string) =
-  let fd = posix.socket(AF_UNIX, SOCK_STREAM, 0)
-  if fd == SocketHandle(-1):
-    raise newException(OSError, "socket failed")
-  
-  var saddr: Sockaddr_un
-  saddr.sun_family = AF_UNIX.TSa_Family
-  let pathCstr = path.cstring
-  if pathCstr.len >= saddr.sun_path.len:
-    raise newException(OSError, "socket path too long")
-  copyMem(addr saddr.sun_path, pathCstr, pathCstr.len)
-  
-  if connect(fd, cast[ptr SockAddr](addr saddr), sizeof(Sockaddr_un).SockLen) != 0:
-    raise newException(OSError, "connect failed: " & path)
+  let cfg = loadConfig()
+  let fd =
+    try:
+      connectUnix(socketPath(sessionName))
+    except OSError:
+      # No local socket. If TCP is configured, scan for the session there
+      # (wireguard, port forward, or same host over 127.0.0.1).
+      if cfg.listen.len == 0:
+        raise
+      var found = SocketHandle(-1)
+      let (ip, basePort) = parseListen(cfg.listen)
+      for p in basePort ..< basePort + 64:
+        try:
+          let candidate = connectTcp(ip, p)
+          sendMsg(candidate, mkAttach, sessionName.toOpenArrayByte(0, sessionName.len-1))
+          let (kind, payload) = recvMsg(candidate)
+          if kind == mkAttached:
+            found = candidate
+            break
+          # Wrong session or error: keep scanning
+          discard posix.close(candidate)
+        except OSError, IOError, ValueError:
+          continue  # nothing on this port, keep scanning
+      if found == SocketHandle(-1):
+        raise newException(OSError, "connect failed: session not found on socket or tcp")
+      found
 
   # Save terminal state and set raw mode
   var oldTermios, rawTermios: Termios
@@ -44,7 +52,7 @@ proc runClientAt*(path: string) =
 
   var sel = newSelector[SocketHandle]()
   sel.registerHandle(fd, {Event.Read}, fd)
-  
+
   # Try to register stdin; may fail if stdin is not selectable (e.g. /dev/null)
   var stdinRegistered = false
   try:
