@@ -54,14 +54,15 @@ jobs:
           trap 'docker rm -f $CID >/dev/null 2>&1 || true' EXIT
           docker exec $CID mkdir -p /data/data/com.termux/files/usr/tmp
           docker cp mpx-android $CID:/data/data/com.termux/files/usr/bin/mpx
+          # No /bin in the Android container: use cat from the Termux prefix.
           docker exec -t $CID sh -c '
             set -e
             mpx -v
             mpx ls
-            mpx daemon smoketest /bin/cat &
+            mpx daemon smoketest cat &
             sleep 2
             mpx ls | grep smoketest
-            (echo hello-from-termux; sleep 1) | timeout 10 mpx attach smoketest | cat -v | grep hello-from-termux
+            (echo hello-from-termux; sleep 1) | timeout 10 mpx attach smoketest | grep hello-from-termux
             mpx kill smoketest
             sleep 1
             ! mpx ls | grep smoketest
