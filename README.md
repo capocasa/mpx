@@ -6,11 +6,20 @@ no escape sequence mangling, no scrollback theft.
 
 ## Install
 
+One-liner (Linux amd64/arm64, macOS universal):
+
+```sh
+curl -fsSL https://mpx.capocasa.dev/install | sh
+```
+
+Or from source:
+
 ```sh
 nimble install
 ```
 
-This installs the `mpx` binary.
+Both install the `mpx` binary. Windows: not supported (POSIX-only by
+nature — PTYs, unix sockets, termios); see the CI matrix for what's built.
 
 ## Local usage
 
