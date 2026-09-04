@@ -4,6 +4,9 @@ Transparent terminal multiplexer. Your terminal emulator (Ghostty, etc.) talks
 directly to the shell. mpx just owns the PTY and forwards bytes. No re-rendering,
 no escape sequence mangling, no scrollback theft.
 
+> **Status: early alpha.** Expect breakage between versions — commands, flags
+> and behavior change without notice. Actively developed.
+
 ## Install
 
 One-liner (Linux amd64/arm64, macOS universal):
