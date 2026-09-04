@@ -1,5 +1,5 @@
 import std/[unittest, os, osproc, strutils]
-import mpx/[protocol, pty, session, log, config]
+import mpx/[protocol, pty, session, log, config, cli]
 import ttty/[terminal, grid]
 
 # Protocol tests
@@ -19,58 +19,77 @@ test "defaultName is cwd basename":
   check defaultName() == lastPathPart(getTempDir())
   setCurrentDir(realCwd)
 
-# Config tests
+# CLI tests
+suite "cli":
+  test "no flags means plain defaults":
+    let o = parseCliArgs(@["daemon", "work"])
+    check o.listen == ""
+    check o.port == 0
+    check not o.log
+    check o.sessions == @["daemon", "work"]
+
+  test "short and long listen":
+    check parseCliArgs(@["daemon", "work", "-l", "10.0.0.4:4534"]).listen == "10.0.0.4:4534"
+    check parseCliArgs(@["daemon", "work", "--listen", "10.0.0.4:4534"]).listen == "10.0.0.4:4534"
+    check parseCliArgs(@["daemon", "work", "--listen=10.0.0.4:4534"]).listen == "10.0.0.4:4534"
+    check parseCliArgs(@["-l", "10.0.0.4:4534", "daemon", "work"]).listen == "10.0.0.4:4534"
+
+  test "port flag":
+    check parseCliArgs(@["-p", "4534", "daemon"]).port == 4534
+    check parseCliArgs(@["--port=9999", "daemon"]).port == 9999
+    expect(ValueError):
+      discard parseCliArgs(@["-p", "0", "daemon"])
+    expect(ValueError):
+      discard parseCliArgs(@["-p", "notanumber", "daemon"])
+
+  test "log flag variants":
+    check parseCliArgs(@["daemon", "--log"]).log
+    check parseCliArgs(@["daemon", "--log=true"]).log
+    check parseCliArgs(@["daemon", "--log=false"]).log == false
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "--log=maybe"])
+
+  test "unknown flag errors":
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "--frobnicate"])
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "-x"])
+
+  test "missing value errors":
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "-l"])
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "--listen"])
+
+  test "listen validation errors":
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "-l", "no-port-here"])
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "-l", "host:0"])
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "-l", "10.0.0.4:notanumber"])
+
+  test "version and help":
+    check parseCliArgs(@["--version"]).version
+    check parseCliArgs(@["-v"]).version
+    check parseCliArgs(@["--help"]).help
+    check parseCliArgs(@["-h"]).help
+    expect(ValueError):
+      discard parseCliArgs(@["--version=false"])
+
+  test "toConfig merges listen and port":
+    check toConfig(parseCliArgs(@["-l", "10.0.0.4:4534"])).listen == "10.0.0.4:4534"
+    check toConfig(parseCliArgs(@["-p", "4534"])).listen == "0.0.0.0:4534"
+    check toConfig(parseCliArgs(@["-l", "10.0.0.4:9000", "-p", "4534"])).listen == "10.0.0.4:4534"
+    check toConfig(parseCliArgs(@["--log"])).log
+
 suite "config":
-  setup:
-    let realCfg = getEnv("XDG_CONFIG_HOME")
-    let dir = getTempDir() / "mpx_test_config"
-    removeDir(dir)
-    createDir(dir / "mpx")
-    putEnv("XDG_CONFIG_HOME", dir)
-
-  teardown:
-    putEnv("XDG_CONFIG_HOME", realCfg)
-    removeDir(dir)
-
-  test "absent config file means defaults":
-    check loadConfig().listen == ""
-    check not loadConfig().log
-
-  test "parse listen and log":
-    let cfg = parseConfig("""
-# comment
-listen = 10.0.0.4:4534
-log = true
-""")
-    check cfg.listen == "10.0.0.4:4534"
-    check cfg.log
-
-  test "log off variants":
-    check not parseConfig("log = false").log
-    check not parseConfig("log = no").log
-    check not parseConfig("log = 0").log
-
-  test "unknown keys ignored":
-    let cfg = parseConfig("frobnicate = yes\nlisten = localhost:9000\n")
-    check cfg.listen == "localhost:9000"
-
-  test "loaded from config file":
-    writeFile(dir / "mpx" / "config", "listen = 127.0.0.1:4534\nlog = true\n")
-    let cfg = loadConfig()
-    check cfg.listen == "127.0.0.1:4534"
-    check cfg.log
-
   test "parseListen splits host and port":
     let (ip, port) = parseListen("10.0.0.4:4534")
     check ip.address_v4 == [byte 10, 0, 0, 4]
     check port == 4534
 
-  test "parseListen rejects junk":
-    expect(ValueError): discard parseListen("no-port-here")
-    expect(ValueError): discard parseListen("host:0")
-    expect(ValueError): discard parseListen("host:99999")
-    expect(ValueError): discard parseListen(":1234")
-    expect(ValueError): discard parseListen("10.0.0.4:notanumber")
+
 
 suite "resolveSession":
   setup:

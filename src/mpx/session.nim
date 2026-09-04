@@ -43,7 +43,8 @@ proc requireSession*(name: string): string =
 proc isActive*(sessionName: string): bool =
   ## True if a daemon is answering on the session socket.
   let path = socketPath(sessionName)
-  if not fileExists(path):
+  var st: Stat
+  if lstat(path.cstring, st) != 0 or not S_ISSOCK(st.st_mode):
     return false
   let fd = posix.socket(AF_UNIX, SOCK_STREAM, 0)
   if fd == SocketHandle(-1):

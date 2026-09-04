@@ -10,8 +10,7 @@ no escape sequence mangling, no scrollback theft.
 nimble install
 ```
 
-This installs two binaries: `mpx` (the unixy short command) and `mpxcli`
-(legacy full CLI, same thing with stricter argument order).
+This installs the `mpx` binary.
 
 ## Local usage
 
@@ -44,26 +43,25 @@ mpx kill main
 When the program inside a session exits, the session ends and disappears
 from `mpx ls`.
 
-## Configuration
+## Options
 
-No config file exists until you create one at
-`~/.config/mpx/config` (macOS: `~/Library/Application Support/mpx/config`,
-Windows: `%APPDATA%\mpx\config`). Without it, mpx runs on a unix socket
-and logs nothing.
+There is no config file. Everything is a command line flag, on any
+subcommand, before or after the other arguments:
 
 ```sh
-mkdir -p ~/.config/mpx
-cat > ~/.config/mpx/config <<'EOF'
-listen = 127.0.0.1:4534
-log = true
-EOF
+mpx -l 10.0.0.4:4534 daemon work   # same as: mpx daemon work -l 10.0.0.4:4534
 ```
 
-- `listen = host:port` also exposes every session over TCP. The port is a
+- `-l, --listen host:port` also exposes the session over TCP. The port is a
   base port: each session daemon takes the first free port at or above it
   (first session 4534, second 4535, ...). Clients scan up from the base
   port and pick their session by name.
-- `log = true` appends to `$XDG_DATA_HOME/mpx/mpx-YYYY.log`.
+- `-p, --port port` TCP base port, overrides the port in `--listen`
+- `--log` appends to `$XDG_DATA_HOME/mpx/mpx-YYYY.log`
+- `-v, --version`, `-h, --help`
+
+Unknown flags, missing values, and malformed `host:port` are errors, not
+guesses. Without `-l`, mpx runs on a unix socket only and logs nothing.
 
 ## Remote usage
 
@@ -74,20 +72,27 @@ Over wireguard (recommended, the traffic is otherwise unencrypted):
 
 ```sh
 # On 10.0.0.4
-mpx daemon work
+mpx daemon -l 10.0.0.4:4534 work
 
-# On your laptop, same config entry on both machines
-mpx attach work
+# On your laptop
+mpx attach -l 10.0.0.4:4534 work
 ```
 
-Both sides need the same `listen` host in their config: the daemon binds
-it, the client scans it.
+Or over the LAN, same shape:
+
+```sh
+# On 192.168.178.130
+mpx daemon -l 192.168.178.130:4534 work
+
+# On the other machine
+mpx attach -l 192.168.178.130:4534 work
+```
 
 Or forward a port manually through SSH if you must:
 
 ```sh
 ssh -N -L 4534:127.0.0.1:4534 remotehost &
-mpx attach work   # with listen = 127.0.0.1:4534 locally
+mpx attach -l 127.0.0.1:4534 work
 ```
 
 Session names gate TCP access: a client must name the session correctly

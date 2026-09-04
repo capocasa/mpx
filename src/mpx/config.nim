@@ -1,60 +1,26 @@
 ## Configuration for mpx.
 ##
-## No config file is created by default; mpx runs on a unix socket with
-## logging off. When `~/.config/mpx/config` (or the platform equivalent)
-## exists it is read once:
+## Configured on the command line, never in a file:
 ##
-##   listen = 10.0.0.4:4534    # also serve TCP, base port (see below)
-##   log = true                # append to $XDG_DATA_HOME/mpx/mpx-YYYY.log
+##   -l, --listen host:port   also serve TCP (base port: the first session
+##                            takes it, the next session the next free port
+##                            above it, and so on)
+##   -p, --port port          TCP base port, overrides the port in --listen
+##       --log                append to $XDG_DATA_HOME/mpx/mpx-YYYY.log
 ##
-## Lines are `key = value`. `#` starts a comment. Blank lines are ignored.
-## Unknown keys are ignored, so the file stays forward-compatible.
+## Older versions also read `~/.config/mpx/config`; that file is ignored
+## now, its loader is kept commented out below.
 ##
-## `listen` gives a base port, not a fixed one: every session daemon needs
-## its own port, so the first session takes 4534, the next free port above
-## that the second, and so on. Clients scan up from the base port and
-## identify the right daemon by session name.
+## `listen` is a base port, not a fixed one: every session daemon needs its
+## own port, and clients scan up from the base port and identify the right
+## daemon by session name.
 
-import std/[os, strutils, net]
+import std/[strutils, net]
 
 type
   Config* = object
     listen*: string   # "host:port" to also listen on TCP, "" for socket only
     log*: bool
-
-proc configPath*(): string =
-  when defined(windows):
-    getEnv("APPDATA", getHomeDir() / "AppData" / "Roaming") / "mpx" / "config"
-  elif defined(macos):
-    getHomeDir() / "Library" / "Application Support" / "mpx" / "config"
-  else:
-    getEnv("XDG_CONFIG_HOME", getHomeDir() / ".config") / "mpx" / "config"
-
-proc parseConfig*(text: string): Config =
-  for line in text.splitLines():
-    let line = line.strip()
-    if line.len == 0 or line.startsWith("#"):
-      continue
-    let eq = line.find('=')
-    if eq < 0:
-      continue
-    let key = line[0 ..< eq].strip.toLowerAscii
-    let value = line[eq + 1 ..^ 1].strip
-    case key
-    of "listen":
-      result.listen = value
-    of "log":
-      result.log = value.toLowerAscii in ["1", "true", "yes", "on"]
-    else:
-      discard
-
-proc loadConfig*(): Config =
-  let path = configPath()
-  if fileExists(path):
-    try:
-      result = parseConfig(readFile(path))
-    except OSError:
-      result = Config()
 
 proc parseListen*(listen: string): tuple[ip: IpAddress, basePort: int] =
   ## "10.0.0.4:4534" -> (parsed ip, 4534). Raises ValueError on bad input.
@@ -68,5 +34,40 @@ proc parseListen*(listen: string): tuple[ip: IpAddress, basePort: int] =
     raise newException(ValueError, "listen port out of range: " & portStr)
   if host.len == 0:
     raise newException(ValueError, "listen host missing")
-  # Accept hostnames too: resolve at call time, not parse time
   (parseIpAddress(host), port)
+
+# Config-file support, replaced by command line flags:
+#
+# proc configPath*(): string =
+#   when defined(windows):
+#     getEnv("APPDATA", getHomeDir() / "AppData" / "Roaming") / "mpx" / "config"
+#   elif defined(macos):
+#     getHomeDir() / "Library" / "Application Support" / "mpx" / "config"
+#   else:
+#     getEnv("XDG_CONFIG_HOME", getHomeDir() / ".config") / "mpx" / "config"
+#
+# proc parseConfig*(text: string): Config =
+#   for line in text.splitLines():
+#     let line = line.strip()
+#     if line.len == 0 or line.startsWith("#"):
+#       continue
+#     let eq = line.find('=')
+#     if eq < 0:
+#       continue
+#     let key = line[0 ..< eq].strip.toLowerAscii
+#     let value = line[eq + 1 ..^ 1].strip
+#     case key
+#     of "listen":
+#       result.listen = value
+#     of "log":
+#       result.log = value.toLowerAscii in ["1", "true", "yes", "on"]
+#     else:
+#       discard
+#
+# proc loadConfig*(): Config =
+#   let path = configPath()
+#   if fileExists(path):
+#     try:
+#       result = parseConfig(readFile(path))
+#     except OSError:
+#       result = Config()

@@ -96,8 +96,7 @@ proc startTcpListener(sessionName: string, cfg: Config): (SocketHandle, int) =
       continue
   raise newException(OSError, "no free TCP port in " & $basePort & ".." & $(basePort + maxTries - 1))
 
-proc runDaemon*(sessionName, cmd: string) =
-  let cfg = loadConfig()
+proc runDaemon*(sessionName, cmd: string, cfg: Config) =
   let log = initLogger(cfg.log)
   log.info "daemon: session=" & sessionName & " cmd=" & cmd
   removeSocket(sessionName)

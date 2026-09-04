@@ -1,8 +1,7 @@
 import std/[posix, termios, selectors]
 import mpx/[protocol, config, pty]
 
-proc runClient*(sessionName: string) =
-  let cfg = loadConfig()
+proc runClient*(sessionName: string, cfg: Config) =
   let fd =
     try:
       connectUnix(socketPath(sessionName))

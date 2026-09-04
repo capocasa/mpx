@@ -87,24 +87,21 @@ echo "example: counter suffix on name collision verified"
 discard execCmd("pkill -f 'mpx daemon /bin/cat' 2>/dev/null")
 removeDir(workdir)
 
-# Config: listen = host:port adds a TCP listener next to the unix socket.
-# Daemon-side and client-side dirs are deliberately different so the client
-# can only reach the session over TCP.
-let cfgDir = getTempDir() / "mpx_example_config"
+# TCP: -l host:port adds a TCP listener next to the unix socket.
+# Daemon-side and client-side runtime dirs are deliberately different so the
+# client can only reach the session over TCP.
 let daemonRt = getTempDir() / "mpx_example_rt"
 let clientRt = getTempDir() / "mpx_example_rt_empty"
 let dataDir = getTempDir() / "mpx_example_data"
-removeDir(cfgDir)
 removeDir(daemonRt)
 removeDir(clientRt)
-createDir(cfgDir / "mpx")
+removeDir(dataDir)
 createDir(daemonRt)
 createDir(clientRt)
-writeFile(cfgDir / "mpx" / "config", "listen = 127.0.0.1:4590\nlog = true\n")
 
-discard startProcess(bin, args=["daemon", "tcpdemo", "/bin/cat"],
-                     env={"XDG_CONFIG_HOME": cfgDir,
-                          "XDG_RUNTIME_DIR": daemonRt,
+discard startProcess(bin, args=["daemon", "tcpdemo", "/bin/cat", "--log",
+                                 "-l", "127.0.0.1:4590"],
+                     env={"XDG_RUNTIME_DIR": daemonRt,
                           "XDG_DATA_HOME": dataDir}.newStringTable,
                      options={poDaemon})
 var tcpUp = false
@@ -116,28 +113,32 @@ for i in 1..40:
     break
   sleep(250)
 doAssert tcpUp, "daemon never logged its tcp listener"
-echo "example: config file enables tcp listener verified"
+echo "example: -l flag enables tcp listener verified"
 
 # Attach with the session socket hidden from the client: goes over TCP
-let (tcpOut, _) = execCmdEx("(echo 'hello over tcp'; sleep 1) | timeout 3 env XDG_CONFIG_HOME=" &
-                            cfgDir & " XDG_RUNTIME_DIR=" & clientRt & " " & bin & " attach tcpdemo")
+let (tcpOut, _) = execCmdEx("(echo 'hello over tcp'; sleep 1) | timeout 3 env XDG_RUNTIME_DIR=" &
+                            clientRt & " " & bin & " attach tcpdemo -l 127.0.0.1:4590")
 doAssert "hello over tcp" in tcpOut, "tcp attach failed, got: " & tcpOut
 echo "example: tcp attach by session name verified"
 
 # Wrong session name is rejected
-let (errOut, exitCode) = execCmdEx("(echo x; sleep 1) | timeout 3 env XDG_CONFIG_HOME=" &
-                                   cfgDir & " XDG_RUNTIME_DIR=" & clientRt & " " & bin &
-                                   " attach nosuchsession")
+let (errOut, exitCode) = execCmdEx("(echo x; sleep 1) | timeout 3 env XDG_RUNTIME_DIR=" &
+                                   clientRt & " " & bin &
+                                   " attach nosuchsession -l 127.0.0.1:4590")
 doAssert exitCode != 0, "wrong session name should fail, got: " & errOut
 echo "example: wrong session name rejected verified"
 
+# Flags are validated: junk values must fail, not be guessed around
+let (_, badFlag) = execCmdEx(bin & " daemon tcpdemo -l junk 2>&1")
+doAssert badFlag != 0, "-l junk should fail"
+let (_, badPort) = execCmdEx(bin & " daemon tcpdemo -p 0 2>&1")
+doAssert badPort != 0, "-p 0 should fail"
+echo "example: invalid flags rejected verified"
+
 discard execCmd("pkill -f 'mpx daemon tcpdemo' 2>/dev/null")
-removeDir(cfgDir)
 removeDir(daemonRt)
 removeDir(clientRt)
-
-# Config file must not exist by default (no state written unless asked for)
-doAssert not fileExists(cfgDir), "example config cleanup failed"
+removeDir(dataDir)
 
 cleanup()
 echo "example: all passed"
