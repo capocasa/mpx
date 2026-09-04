@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create release from'
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Wait for platform builds and download artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+            sha=$(gh api "repos/${{ github.repository }}/commits/$tag" -q '.sha')
+          else
+            tag="${{ github.ref_name }}"
+            sha="${{ github.sha }}"
+          fi
+          echo "tag=$tag sha=$sha"
+          mkdir -p dl
+
+          for workflow in linux-amd64.yml linux-arm64.yml osx.yml; do
+            echo "--- $workflow ---"
+            for i in $(seq 1 60); do
+              failed=$(gh run list --workflow "$workflow" \
+                --status failure --event push --limit 20 \
+                --json databaseId,headBranch,headSha \
+                -q "[.[] | select(.headSha==\"$sha\" and .headBranch==\"$tag\") | .databaseId] | first")
+              if [ -n "$failed" ]; then
+                echo "  $workflow run $failed FAILED — aborting" >&2
+                exit 1
+              fi
+              run_id=$(gh run list --workflow "$workflow" \
+                --status success --event push --limit 20 \
+                --json databaseId,headBranch,headSha \
+                -q "[.[] | select(.headSha==\"$sha\" and .headBranch==\"$tag\") | .databaseId] | first")
+              if [ -n "$run_id" ]; then
+                echo "  found run $run_id"
+                gh run download "$run_id" --dir dl
+                break
+              fi
+              echo "  attempt $i/60, sleeping 20s..."
+              sleep 20
+            done
+            if [ -z "${run_id:-}" ]; then
+              echo "  ERROR: $workflow did not complete for tag $tag (sha $sha) after 20min" >&2
+              exit 1
+            fi
+          done
+
+          echo "--- artifacts ---"
+          find dl -type f
+
+      - name: Collect archive files
+        run: |
+          cp dl/mpx-linux-amd64/mpx-linux-amd64.tar.gz         . 2>/dev/null || true
+          cp dl/mpx-linux-arm64/mpx-linux-arm64.tar.gz         . 2>/dev/null || true
+          cp dl/mpx-macos-universal/mpx-macos-universal.tar.gz . 2>/dev/null || true
+          ls -la *.tar.gz
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          gh release create "$tag" \
+            --repo ${{ github.repository }} \
+            --title "$tag" \
+            --generate-notes \
+            mpx-linux-amd64.tar.gz \
+            mpx-linux-arm64.tar.gz \
+            mpx-macos-universal.tar.gz

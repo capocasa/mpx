@@ -1,0 +1,68 @@
+name: Linux arm64
+
+on:
+  push:
+    branches: [main]
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Nim toolchain cache
+        id: cache-nim
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/nim-toolchain
+          key: ${{ runner.os }}-${{ runner.arch }}-nim-toolchain-${{ hashFiles('mpx.nimble') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-nim-toolchain-
+
+      - uses: jiro4989/setup-nim-action@v2
+        if: steps.cache-nim.outputs.cache-hit != 'true'
+        with:
+          nim-version: stable
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          parent-nim-install-directory: $HOME
+          nim-install-directory: nim-toolchain
+
+      - name: Add Nim to PATH on cache hit
+        if: steps.cache-nim.outputs.cache-hit == 'true'
+        run: echo "$HOME/nim-toolchain/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+
+      - name: Build
+        run: nim c --hints:off --path:src -d:release -o:mpx src/mpx.nim
+
+      - name: Test
+        run: nimble test
+
+      - name: Example
+        run: nimble example
+
+      - name: Package
+        run: |
+          mkdir -p mpx-linux-arm64
+          cp mpx mpx-linux-arm64/
+          ./mpx -v > mpx-linux-arm64/VERSION
+          cp README.md mpx-linux-arm64/
+          tar czf mpx-linux-arm64.tar.gz mpx-linux-arm64
+
+      - name: Upload artifact (GitHub Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpx-linux-arm64
+          path: mpx-linux-arm64.tar.gz
+
+      - name: Upload artifact to mpx.capocasa.dev
+        if: github.ref == 'refs/heads/main'
+        run: |
+          curl -f -H "Authorization: Bearer ${{ secrets.RELEASE_SECRET }}" -F "file=@mpx-linux-arm64.tar.gz" \
+            https://mpx.capocasa.dev/main/builds/upload.nim

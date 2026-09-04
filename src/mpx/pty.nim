@@ -9,14 +9,22 @@ type
     ws_xpixel: uint16
     ws_ypixel: uint16
 
-proc openpty(amaster, aslave: ptr cint, name: cstring, termp: pointer, winp: ptr Winsize): cint
-  {.importc, header: "<pty.h>".}
+when defined(macosx) or defined(freebsd) or defined(netbsd) or defined(openbsd) or defined(dragonfly):
+  # BSD lineage: openpty lives in <util.h> (and needs -lutil on some)
+  proc openpty(amaster, aslave: ptr cint, name: cstring, termp: pointer, winp: ptr Winsize): cint
+    {.importc, header: "<util.h>".}
+else:
+  proc openpty(amaster, aslave: ptr cint, name: cstring, termp: pointer, winp: ptr Winsize): cint
+    {.importc, header: "<pty.h>".}
 
 proc ioctl(fd: cint, request: culong, arg: pointer): cint
   {.importc, header: "<sys/ioctl.h>".}
 
+when defined(macosx) or defined(macos):
+  const TIOCSCTTY = 0x20007461'u32  # _IOW('t', 132) on BSD/macOS
+else:
+  const TIOCSCTTY = 0x540E'u32   # Linux
 const
-  TIOCSCTTY = 0x540E'u32
   TIOCSWINSZ = 0x5414'u32
   TIOCGWINSZ = 0x5413'u32
 

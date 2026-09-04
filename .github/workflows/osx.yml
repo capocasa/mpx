@@ -1,0 +1,75 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Nim toolchain cache
+        id: cache-nim
+        uses: actions/cache@v4
+        with:
+          path: /Users/runner/nim-toolchain
+          key: ${{ runner.os }}-${{ runner.arch }}-nim-toolchain-${{ hashFiles('mpx.nimble') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-nim-toolchain-
+
+      - uses: jiro4989/setup-nim-action@v2
+        if: steps.cache-nim.outputs.cache-hit != 'true'
+        with:
+          nim-version: stable
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          parent-nim-install-directory: $HOME
+          nim-install-directory: nim-toolchain
+
+      - name: Add Nim to PATH on cache hit
+        if: steps.cache-nim.outputs.cache-hit == 'true'
+        run: echo "$HOME/nim-toolchain/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+
+      - name: Build
+        # macos-latest is arm64; the amd64 slice is cross-compiled on the
+        # same machine, then lipo merges both into one universal binary.
+        run: |
+          nim c --hints:off --path:src -d:release -o:mpx src/mpx.nim
+          nim c --hints:off --path:src -d:release --cpu:amd64 --os:macosx \
+            -o:mpx-amd64 --passC:-target --passC:x86_64-apple-macosx1 --passL:-target --passL:x86_64-apple-macosx1 src/mpx.nim || \
+          nim c --hints:off --path:src -d:release --cpu:amd64 --os:macosx -o:mpx-amd64 src/mpx.nim
+
+      - name: Test
+        run: nimble test
+
+      - name: Example
+        run: nimble example
+
+      - name: Package universal
+        run: |
+          lipo -create mpx mpx-amd64 -output mpx-universal
+          mkdir -p mpx-macos-universal
+          cp mpx-universal mpx-macos-universal/mpx
+          ./mpx -v > mpx-macos-universal/VERSION
+          cp README.md mpx-macos-universal/
+          tar czf mpx-macos-universal.tar.gz mpx-macos-universal
+
+      - name: Upload artifact (GitHub Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpx-macos-universal
+          path: mpx-macos-universal.tar.gz
+
+      - name: Upload artifact to mpx.capocasa.dev
+        if: github.ref == 'refs/heads/main'
+        run: |
+          curl -f -H "Authorization: Bearer ${{ secrets.RELEASE_SECRET }}" -F "file=@mpx-macos-universal.tar.gz" \
+            https://mpx.capocasa.dev/main/builds/upload.nim

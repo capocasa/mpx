@@ -1,0 +1,54 @@
+name: Linux amd64
+
+on:
+  push:
+    branches: [main]
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          parent-nim-install-directory: $HOME
+          nim-install-directory: nim-toolchain
+
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+
+      - name: Build
+        run: nim c --hints:off --path:src -d:release -o:mpx src/mpx.nim
+
+      - name: Test
+        run: nimble test
+
+      - name: Example
+        run: nimble example
+
+      - name: Package
+        run: |
+          mkdir -p mpx-linux-amd64
+          cp mpx mpx-linux-amd64/
+          ./mpx -v > mpx-linux-amd64/VERSION
+          cp README.md mpx-linux-amd64/
+          tar czf mpx-linux-amd64.tar.gz mpx-linux-amd64
+
+      - name: Upload artifact (GitHub Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpx-linux-amd64
+          path: mpx-linux-amd64.tar.gz
+
+      - name: Upload artifact to mpx.capocasa.dev
+        if: github.ref == 'refs/heads/main'
+        run: |
+          curl -f -H "Authorization: Bearer ${{ secrets.RELEASE_SECRET }}" -F "file=@mpx-linux-amd64.tar.gz" \
+            https://mpx.capocasa.dev/main/builds/upload.nim

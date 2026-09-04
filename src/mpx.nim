@@ -1,5 +1,7 @@
 import std/[os, posix, strutils, sequtils]
 import mpx/[daemon, client, protocol, session, cli]
+when not defined(linux):
+  import std/osproc
 
 const
   Version = staticRead("../mpx.nimble").splitLines.filterIt(it.startsWith("version"))[0].split('=')[1].strip().strip(chars={' ', '"'})
@@ -22,6 +24,29 @@ proc help() =
     if text.len > 0:
       echo "      " & text
   quit(0)
+
+when defined(linux):
+  proc daemonPids(sessionName: string): seq[int] =
+    # Find the daemon by its exact argv: "<exe> daemon <session> ..."
+    for f in walkFiles("/proc/[0-9]*/cmdline"):
+      try:
+        let argv = readFile(f).split("\0")
+        if argv.len >= 3 and argv[1] == "daemon" and argv[2] == sessionName and
+            argv[0].extractFilename in ["mpx", "mpx.out", "mpx.bin"]:
+          result.add f.split('/')[2].parseInt
+      except:
+        discard
+else:
+  proc daemonPids(sessionName: string): seq[int] =
+    # No /proc on macOS: pgrep -f matches the full command line
+    when declared(execCmdEx):
+      let (outp, code) = execCmdEx("pgrep -f 'mpx daemon " & sessionName & "'")
+      if code == 0:
+        for line in outp.splitLines():
+          try:
+            result.add line.strip.parseInt
+          except ValueError:
+            discard
 
 proc die*(msg: string) =
   stderr.writeLine "mpx: " & msg
@@ -121,18 +146,11 @@ proc main() =
       die((if stale: "cleaned stale socket, no daemon for session: " else: "no such session: ") & sessionName)
     removeSocket(sessionName)
     removeLock(sessionName)
-    # Kill daemon by matching cmdline
     var killed = 0
-    for f in walkFiles("/proc/[0-9]*/cmdline"):
-      try:
-        let content = readFile(f)
-        if "mpx" in content and "daemon" in content and sessionName in content:
-          let pid = f.split('/')[2].parseInt
-          if kill(pid.Pid, SIGTERM) == 0:
-            inc killed
-            echo "killed ", pid
-      except:
-        discard
+    for pid in daemonPids(sessionName):
+      if posix.kill(pid.Pid, SIGTERM) == 0:
+        inc killed
+        echo "killed ", pid
     if killed == 0:
       die("no daemon found for session: " & sessionName)
   else:
