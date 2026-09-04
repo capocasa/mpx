@@ -87,6 +87,36 @@ echo "example: counter suffix on name collision verified"
 discard execCmd("pkill -f 'mpx daemon /bin/cat' 2>/dev/null")
 removeDir(workdir)
 
+# Logging: off by default, MPX_LOG=1 appends to $XDG_DATA_HOME/mpx/
+let dataDir = getTempDir() / "mpx_example_data"
+removeDir(dataDir)
+createDir(dataDir)
+putEnv("XDG_DATA_HOME", dataDir)
+putEnv("MPX_LOG", "1")
+discard startProcess(bin, args=["daemon", Session, "/bin/sleep", "30"],
+                     options={poDaemon})
+var logPath = ""
+for i in 1..40:
+  for f in walkFiles(dataDir / "mpx" / "*.log"):
+    logPath = f
+  if logPath.len > 0 and fileExists(logPath):
+    break
+  sleep(250)
+doAssert logPath.len > 0, "no log file created with MPX_LOG=1"
+var logged = false
+for i in 1..20:
+  if "listening on" in readFile(logPath):
+    logged = true
+    break
+  sleep(250)
+doAssert logged, "daemon did not log 'listening on'"
+echo "example: MPX_LOG=1 writes daemon log verified"
+putEnv("MPX_LOG", "")
+discard execCmd("pkill -f 'mpx daemon " & Session & "' 2>/dev/null")
+cleanup()
+removeDir(dataDir)
+putEnv("XDG_DATA_HOME", "")
+
 # Cleanup
 cleanup()
 echo "example: all passed"

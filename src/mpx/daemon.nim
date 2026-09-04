@@ -1,5 +1,5 @@
 import std/[posix, os, strutils, selectors]
-import mpx/[pty, protocol]
+import mpx/[pty, protocol, log]
 import ttty/[terminal, grid]
 
 type
@@ -71,6 +71,8 @@ proc handleClientMsg(session: var Session, fd: SocketHandle, kind: MsgKind, payl
     discard
 
 proc runDaemon*(sessionName, cmd: string) =
+  let log = initLogger()
+  log.info "daemon: session=" & sessionName & " cmd=" & cmd
   removeSocket(sessionName)
   let path = socketPath(sessionName)
   
@@ -95,8 +97,7 @@ proc runDaemon*(sessionName, cmd: string) =
   sel.registerHandle(listenFd, {Event.Read}, listenFd)
   sel.registerHandle(session.pty.masterFd.SocketHandle, {Event.Read}, session.pty.masterFd.SocketHandle)
 
-  # TODO: route to a log file under $XDG_DATA_HOME/mpx once logging lands
-  # echo "daemon: listening on ", path
+  log.info "listening on " & path
 
   while session.running:
     let events = sel.select(-1)
@@ -107,7 +108,7 @@ proc runDaemon*(sessionName, cmd: string) =
         if clientFd != SocketHandle(-1):
           session.clients.add(Client(fd: clientFd))
           sel.registerHandle(clientFd, {Event.Read}, clientFd)
-          # echo "daemon: client attached, fd=", clientFd.cint
+          log.info "client attached fd=" & $clientFd.cint
       elif ev.fd == session.pty.masterFd:
         # PTY output
         var buf: array[4096, byte]
@@ -141,4 +142,5 @@ proc runDaemon*(sessionName, cmd: string) =
   removeSocket(sessionName)
   removeLock(sessionName)
   session.pty.close()
-  # echo "daemon: exited"
+  log.info "daemon: exited"
+  log.close()

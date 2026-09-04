@@ -44,6 +44,15 @@ mpx kill main
 When the program inside a session exits, the session ends and disappears
 from `mpx ls`.
 
+## Logging
+
+Off by default. `MPX_LOG=1` makes the daemon append to
+`$XDG_DATA_HOME/mpx/mpx-YYYY.log`:
+
+```sh
+MPX_LOG=1 mpx new
+```
+
 ## systemd
 
 Copy `mpx@.service` to `~/.config/systemd/user/` (create the dir if needed):

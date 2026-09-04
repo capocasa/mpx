@@ -1,5 +1,5 @@
 import std/[unittest, os, osproc, strutils]
-import mpx/[protocol, pty, session]
+import mpx/[protocol, pty, session, log]
 import ttty/[terminal, grid]
 
 # Protocol tests
@@ -58,6 +58,29 @@ suite "resolveSession":
     check defaultName() == "~"
     setCurrentDir(getTempDir())
     removeDir(fakeHome)
+
+suite "logging":
+  test "disabled by default":
+    let dir = getTempDir() / "mpx_test_data"
+    removeDir(dir)
+    putEnv("XDG_DATA_HOME", dir)
+    putEnv("MPX_LOG", "")
+    let l = initLogger()
+    l.info "should not land anywhere"
+    l.close()
+    check not dirExists(dir / "mpx")
+
+  test "enabled with MPX_LOG=1":
+    let dir = getTempDir() / "mpx_test_data"
+    removeDir(dir)
+    putEnv("XDG_DATA_HOME", dir)
+    putEnv("MPX_LOG", "1")
+    let l = initLogger()
+    l.info "hello log"
+    l.close()
+    check fileExists(l.path)
+    check "hello log" in readFile(l.path)
+    removeDir(dir)
 
 test "requireSession rejects empty":
   expect(ValueError):
