@@ -101,6 +101,10 @@ proc runDaemon*(sessionName, cmd: string, cfg: Config) =
   log.info "daemon: session=" & sessionName & " cmd=" & cmd
   removeSocket(sessionName)
   let path = socketPath(sessionName)
+  # Record the daemon pid next to the socket: kill targets the exact
+  # process without /proc cmdline matching (which breaks under qemu
+  # emulation and differs across platforms).
+  writeFile(path.changeFileExt("pid"), $getpid())
 
   let listenFd = posix.socket(AF_UNIX, SOCK_STREAM, 0)
   if listenFd == SocketHandle(-1):
@@ -195,6 +199,10 @@ proc runDaemon*(sessionName, cmd: string, cfg: Config) =
     discard posix.close(tcpFd)
   removeSocket(sessionName)
   removeLock(sessionName)
+  try:
+    removeFile(socketPath(sessionName).changeFileExt("pid"))
+  except OSError:
+    discard
   session.pty.close()
   log.info "daemon: exited"
   log.close()

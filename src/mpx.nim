@@ -1,7 +1,5 @@
 import std/[os, posix, strutils, sequtils]
 import mpx/[daemon, client, protocol, session, cli, runtime]
-when not defined(linux):
-  import std/osproc
 
 const
   Version = staticRead("../mpx.nimble").splitLines.filterIt(it.startsWith("version"))[0].split('=')[1].strip().strip(chars={' ', '"'})
@@ -25,31 +23,32 @@ proc help() =
       echo "      " & text
   quit(0)
 
-proc daemonPids(sessionName: string): seq[int] =
-  # Find the daemon by its exact argv: "<exe> daemon <session> ...". The
-  # exe name is not matched on purpose: any binary built from this source
-  # (mpx, mpx.out, a dev build under a different name) kills the same way.
-  when defined(linux):
-    for f in walkFiles("/proc/[0-9]*/cmdline"):
-      try:
-        let argv = readFile(f).split("\0")
-        if argv.len >= 3 and argv[1] == "daemon" and argv[2] == sessionName:
-          result.add f.split('/')[2].parseInt
-      except:
-        discard
-  else:
-    # No /proc on macOS: pgrep -f matches the full command line
-    let (outp, code) = execCmdEx("pgrep -f 'mpx daemon " & sessionName & "'")
-    if code == 0:
-      for line in outp.splitLines():
-        try:
-          result.add line.strip.parseInt
-        except ValueError:
-          discard
-
 proc die*(msg: string) =
   stderr.writeLine "mpx: " & msg
   quit(1)
+
+proc pathPresent(p: string): bool =
+  # fileExists is false for sockets; lstat only says the path is there
+  var st: Stat
+  lstat(p.cstring, st) == 0
+
+proc cleanSessionFiles(sessionName: string) =
+  for ext in [".sock", ".lock", ".pid"]:
+    let p = socketPath(sessionName).changeFileExt(ext)
+    if pathPresent(p):
+      try:
+        removeFile(p)
+      except OSError:
+        discard
+
+proc cleanStale(sessionName: string) =
+  var stale = false
+  for ext in [".sock", ".lock", ".pid"]:
+    if pathPresent(socketPath(sessionName).changeFileExt(ext)):
+      stale = true
+      break
+  cleanSessionFiles(sessionName)
+  die((if stale: "cleaned stale socket, no daemon for session: " else: "no such session: ") & sessionName)
 
 proc main() =
   var opts: Opts
@@ -135,22 +134,16 @@ proc main() =
           echo f.extractFilename.changeFileExt("")
   of "kill":
     if not isActive(sessionName):
-      # Daemon is gone; a leftover socket/lock is stale garbage, clean it
-      var stale = false
-      for ext in [".sock", ".lock"]:
-        let p = socketPath(sessionName).changeFileExt(ext)
-        if fileExists(p):
-          removeFile(p)
-          stale = true
-      die((if stale: "cleaned stale socket, no daemon for session: " else: "no such session: ") & sessionName)
-    removeSocket(sessionName)
-    removeLock(sessionName)
-    var killed = 0
-    for pid in daemonPids(sessionName):
-      if posix.kill(pid.Pid, SIGTERM) == 0:
-        inc killed
-        echo "killed ", pid
-    if killed == 0:
+      # Daemon is gone; leftover files are stale garbage, clean them
+      cleanStale(sessionName)
+    let pid = daemonPid(sessionName)
+    if pid != 0 and posix.kill(pid.Pid, SIGTERM) == 0:
+      echo "killed ", pid
+      # Daemon cleanup runs on graceful exit; sweep whatever remains so
+      # a crashed daemon leaves nothing behind
+      sleep(100)
+      cleanSessionFiles(sessionName)
+    else:
       die("no daemon found for session: " & sessionName)
   else:
     die("unknown command: " & mode & ". " & UsageHint)

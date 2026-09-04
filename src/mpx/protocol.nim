@@ -1,4 +1,4 @@
-import std/[posix, os]
+import std/[posix, os, strutils]
 from std/net import parseIpAddress, IpAddress, IpAddressFamily
 import runtime
 
@@ -61,6 +61,13 @@ proc removeLock*(sessionName: string) =
     removeFile(socketPath(sessionName).changeFileExt("lock"))
   except OSError:
     discard
+
+proc daemonPid*(sessionName: string): int =
+  ## Pid recorded by the daemon next to its socket, or 0 when absent.
+  try:
+    parseInt(readFile(socketPath(sessionName).changeFileExt("pid")).strip)
+  except CatchableError:
+    0
 
 proc connectUnix*(path: string): SocketHandle =
   let fd = posix.socket(AF_UNIX, SOCK_STREAM, 0)
