@@ -10,7 +10,7 @@ bin           = @["mpx"]
 # Dependencies
 
 requires "nim >= 2.2.10"
-requires "ttty >= 0.5.1"
+requires "ttty >= 0.5.2"
 
 task example, "Run example end-to-end":
   exec "nim c --hints:off --path:src -o:build/example example/example.nim"
