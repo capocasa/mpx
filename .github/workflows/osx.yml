@@ -40,12 +40,13 @@ jobs:
 
       - name: Build
         # macos-latest is arm64; the amd64 slice is cross-compiled on the
-        # same machine, then lipo merges both into one universal binary.
+        # same machine with clang -arch x86_64, then lipo merges both into
+        # one universal binary.
         run: |
           nim c --hints:off --path:src -d:release -o:mpx src/mpx.nim
           nim c --hints:off --path:src -d:release --cpu:amd64 --os:macosx \
-            -o:mpx-amd64 --passC:-target --passC:x86_64-apple-macosx1 --passL:-target --passL:x86_64-apple-macosx1 src/mpx.nim || \
-          nim c --hints:off --path:src -d:release --cpu:amd64 --os:macosx -o:mpx-amd64 src/mpx.nim
+            --passC:-arch --passC:x86_64 --passL:-arch --passL:x86_64 \
+            -o:mpx-amd64 src/mpx.nim
 
       - name: Test
         run: nimble test
