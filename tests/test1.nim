@@ -1,13 +1,13 @@
 import std/[unittest, os, osproc, strutils]
-import mpx/[protocol, pty, session, log, config, cli]
+import mpx/[protocol, pty, session, log, config, cli, runtime]
 import ttty/[terminal, grid]
 
 # Protocol tests
 test "socketPath":
-  putEnv("XDG_RUNTIME_DIR", "/tmp")
   let path = socketPath("test")
   check "mpx" in path
   check "test.sock" in path
+  check path == mpxDir() / "test.sock"
 
 test "resolveSession named passes through":
   check resolveSession("work") == "work"

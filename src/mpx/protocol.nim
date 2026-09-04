@@ -1,5 +1,6 @@
 import std/[posix, os]
 from std/net import parseIpAddress, IpAddress, IpAddressFamily
+import runtime
 
 type
   MsgKind* = enum
@@ -44,10 +45,7 @@ proc recvMsg*(fd: SocketHandle): tuple[kind: MsgKind, payload: seq[byte]] =
       raise newException(IOError, "short read on message payload")
 
 proc socketPath*(sessionName: string): string =
-  let runtimeDir = getEnv("XDG_RUNTIME_DIR", getEnv("TMPDIR", "/tmp"))
-  result = runtimeDir / "mpx"
-  createDir(result)
-  result = result / sessionName & ".sock"
+  mpxDir() / sessionName & ".sock"
 
 proc removeSocket*(sessionName: string) =
   ## Remove a stale socket. Never removes the session lock file: the daemon

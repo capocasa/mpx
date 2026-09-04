@@ -1,0 +1,92 @@
+name: Termux (Android arm64)
+
+on:
+  push:
+    branches: [main]
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          parent-nim-install-directory: $HOME
+          nim-install-directory: nim-toolchain
+
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+
+      - name: Download Android NDK
+        run: |
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
+          unzip -q ndk.zip
+          echo "NDK_CLANG=$PWD/android-ndk-r26c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" >> "$GITHUB_ENV"
+
+      - name: Build (cross, --os:android --cpu:arm64)
+        # Bionic provides openpty in libc (like Termux's own build, which
+        # links it as openpty@LIBC with no extra libs). Sockets land under
+        # the Termux prefix at runtime (TERMUX_VERSION check in
+        # src/mpx/runtime.nim).
+        run: |
+          nim c --hints:off --path:src -d:release --os:android --cpu:arm64 \
+            --clang.exe:"$NDK_CLANG" --clang.linkerexe:"$NDK_CLANG" \
+            -o:mpx-android src/mpx.nim
+          file mpx-android
+
+      - name: Smoke test in emulated Termux
+        # The x86 runner can't run the arm64 binary; run it inside
+        # termux-docker under qemu. This exercises -v, ls, daemon+attach
+        # over a PTY, kill, and the Termux runtime dir resolution.
+        run: |
+          set -e
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes > /dev/null
+          CID=$(docker create -t --platform linux/arm64 --user 1000:1000 \
+            termux/termux-docker:latest sleep 900)
+          docker start $CID >/dev/null
+          trap 'docker rm -f $CID >/dev/null 2>&1 || true' EXIT
+          docker exec $CID mkdir -p /data/data/com.termux/files/usr/tmp
+          docker cp mpx-android $CID:/data/data/com.termux/files/usr/bin/mpx
+          docker exec -t $CID sh -c '
+            set -e
+            mpx -v
+            mpx ls
+            mpx daemon smoketest /bin/cat &
+            sleep 2
+            mpx ls | grep smoketest
+            (echo hello-from-termux; sleep 1) | timeout 10 mpx attach smoketest | cat -v | grep hello-from-termux
+            mpx kill smoketest
+            sleep 1
+            ! mpx ls | grep smoketest
+          '
+          echo "termux smoke test passed"
+
+      - name: Package
+        run: |
+          mkdir -p mpx-termux-arm64
+          cp mpx-android mpx-termux-arm64/mpx
+          # Can't run the android binary on the x86 host; version comes
+          # from the nimble file (tag releases) or the short SHA.
+          grep -m1 '^version' mpx.nimble | cut -d'"' -f2 > mpx-termux-arm64/VERSION
+          git rev-parse --short=8 HEAD >> mpx-termux-arm64/VERSION
+          cp README.md mpx-termux-arm64/
+          tar czf mpx-termux-arm64.tar.gz mpx-termux-arm64
+
+      - name: Upload artifact (GitHub Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpx-termux-arm64
+          path: mpx-termux-arm64.tar.gz
+
+      - name: Upload artifact to mpx.capocasa.dev
+        if: github.ref == 'refs/heads/main'
+        run: |
+          curl -f -H "Authorization: Bearer ${{ secrets.RELEASE_SECRET }}" -F "file=@mpx-termux-arm64.tar.gz" \
+            https://mpx.capocasa.dev/main/builds/upload.nim

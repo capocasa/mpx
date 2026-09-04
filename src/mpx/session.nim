@@ -1,5 +1,5 @@
 import std/[os, posix]
-import protocol
+import protocol, runtime
 
 proc defaultName*(): string =
   ## Sessions started without a name are named after the current directory.
@@ -16,8 +16,7 @@ proc resolveSession*(name: string): string =
   if name.len > 0:
     return name
   let base = defaultName()
-  let dir = getEnv("XDG_RUNTIME_DIR", getEnv("TMPDIR", "/tmp")) / "mpx"
-  createDir(dir)
+  let dir = mpxDir()
   # Claim the name with a lock file so concurrent `mpx new` calls don't collide
   var i = -1
   while true:

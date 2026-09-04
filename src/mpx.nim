@@ -1,5 +1,5 @@
 import std/[os, posix, strutils, sequtils]
-import mpx/[daemon, client, protocol, session, cli]
+import mpx/[daemon, client, protocol, session, cli, runtime]
 when not defined(linux):
   import std/osproc
 
@@ -25,28 +25,27 @@ proc help() =
       echo "      " & text
   quit(0)
 
-when defined(linux):
-  proc daemonPids(sessionName: string): seq[int] =
-    # Find the daemon by its exact argv: "<exe> daemon <session> ..."
+proc daemonPids(sessionName: string): seq[int] =
+  # Find the daemon by its exact argv: "<exe> daemon <session> ...". The
+  # exe name is not matched on purpose: any binary built from this source
+  # (mpx, mpx.out, a dev build under a different name) kills the same way.
+  when defined(linux):
     for f in walkFiles("/proc/[0-9]*/cmdline"):
       try:
         let argv = readFile(f).split("\0")
-        if argv.len >= 3 and argv[1] == "daemon" and argv[2] == sessionName and
-            argv[0].extractFilename in ["mpx", "mpx.out", "mpx.bin"]:
+        if argv.len >= 3 and argv[1] == "daemon" and argv[2] == sessionName:
           result.add f.split('/')[2].parseInt
       except:
         discard
-else:
-  proc daemonPids(sessionName: string): seq[int] =
+  else:
     # No /proc on macOS: pgrep -f matches the full command line
-    when declared(execCmdEx):
-      let (outp, code) = execCmdEx("pgrep -f 'mpx daemon " & sessionName & "'")
-      if code == 0:
-        for line in outp.splitLines():
-          try:
-            result.add line.strip.parseInt
-          except ValueError:
-            discard
+    let (outp, code) = execCmdEx("pgrep -f 'mpx daemon " & sessionName & "'")
+    if code == 0:
+      for line in outp.splitLines():
+        try:
+          result.add line.strip.parseInt
+        except ValueError:
+          discard
 
 proc die*(msg: string) =
   stderr.writeLine "mpx: " & msg
@@ -129,7 +128,7 @@ proc main() =
       die(getCurrentExceptionMsg())
   of "ls":
     # walkDir, not walkFiles: sockets are not regular files
-    let dir = getEnv("XDG_RUNTIME_DIR", getEnv("TMPDIR", "/tmp")) / "mpx"
+    let dir = mpxDir()
     if dirExists(dir):
       for (_, f) in walkDir(dir):
         if f.endsWith(".sock"):
