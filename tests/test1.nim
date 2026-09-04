@@ -12,18 +12,52 @@ test "socketPath":
 test "resolveSession named passes through":
   check resolveSession("work") == "work"
 
-test "resolveSession auto number":
-  let dir = getTempDir() / "mpx_test_sessions"
-  removeDir(dir)
-  createDir(dir / "mpx")
-  putEnv("XDG_RUNTIME_DIR", dir)
-  check resolveSession("") == "1"
-  writeFile(dir / "mpx" / "1.sock", "")
-  writeFile(dir / "mpx" / "foo.sock", "")
-  check resolveSession("") == "2"
-  writeFile(dir / "mpx" / "2.sock", "")
-  check resolveSession("") == "3"
-  removeDir(dir)
+test "defaultName is cwd basename":
+  let realCwd = getCurrentDir()
+  putEnv("HOME", "/nonexistent_home")
+  setCurrentDir(getTempDir())
+  check defaultName() == lastPathPart(getTempDir())
+  setCurrentDir(realCwd)
+
+suite "resolveSession":
+  setup:
+    let dir = getTempDir() / "mpx_test_sessions"
+    removeDir(dir)
+    createDir(dir / "mpx")
+    putEnv("XDG_RUNTIME_DIR", dir)
+    let realCwd = getCurrentDir()
+    let realHome = getEnv("HOME")
+    putEnv("HOME", "/nonexistent_home")
+    setCurrentDir(getTempDir() / "mpx_test_sessions")
+
+  teardown:
+    setCurrentDir(realCwd)
+    putEnv("HOME", realHome)
+    let dir = getTempDir() / "mpx_test_sessions"
+    removeDir(dir)
+
+  test "empty name defaults to cwd basename":
+    check resolveSession("") == "mpx_test_sessions"
+
+  test "counter deconflicts":
+    check resolveSession("") == "mpx_test_sessions"
+    writeFile(dir / "mpx" / "mpx_test_sessions.sock", "")
+    check resolveSession("") == "mpx_test_sessions0"
+    writeFile(dir / "mpx" / "mpx_test_sessions0.sock", "")
+    check resolveSession("") == "mpx_test_sessions1"
+
+  test "unrelated session does not affect numbering":
+    writeFile(dir / "mpx" / "foo.sock", "")
+    check resolveSession("") == "mpx_test_sessions"
+
+  test "homedir defaults to ~":
+    let fakeHome = getTempDir() / "mpx_test_home"
+    createDir(fakeHome)
+    setCurrentDir(fakeHome)
+    putEnv("HOME", fakeHome)
+    check defaultName() == "~"
+    setCurrentDir(getTempDir())
+    removeDir(fakeHome)
 
 test "requireSession rejects empty":
   expect(ValueError):

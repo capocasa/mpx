@@ -115,8 +115,8 @@ proc runDaemon*(sessionName, cmd: string) =
           # Feed ttty side cache
           session.term.write(cast[string](buf[0..<n]))
           session.broadcast(mkOutput, buf[0..<n])
-        elif n == 0:
-          # Child exited
+        else:
+          # Child exited. Linux reports PTY EOF as EIO (-1), BSD as 0.
           session.running = false
           break
       else:

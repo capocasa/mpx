@@ -10,7 +10,7 @@ proc die(code: int, msg: string) =
 
 proc usage() =
   echo "Usage:"
-  echo "  mpx daemon [session] [cmd]   # start daemon (default session: next free number)"
+  echo "  mpx daemon [session] [cmd]   # start daemon (default name: dir basename, ~ in homedir)"
   echo "  mpx attach <session>         # attach to session"
   echo "  mpx new [session] [cmd]      # daemon in background + attach"
   echo "  mpx relay <host> <session>   # attach via SSH tunnel"

@@ -62,8 +62,9 @@ proc runClientAt*(path: string) =
         var buf: array[4096, byte]
         let n = posix.read(0, addr buf[0], buf.len)
         if n > 0:
-          # Check for Ctrl+D (0x04) to detach
-          if n == 1 and buf[0] == 0x04:
+          # Ctrl+\ (0x1c) detaches; Ctrl+D passes through so the
+          # contained program sees EOF and can exit
+          if n == 1 and buf[0] == 0x1c:
             sendMsg(fd, mkDetach)
             running = false
           else:

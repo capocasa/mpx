@@ -1,25 +1,38 @@
 import std/[os, posix]
 import protocol
 
+proc defaultName*(): string =
+  ## Sessions started without a name are named after the current directory.
+  ## Homedir collapses to `~`.
+  let cwd = normalizedPath(getCurrentDir())
+  if cwd == normalizedPath(getHomeDir()):
+    "~"
+  else:
+    lastPathPart(cwd)
+
 proc resolveSession*(name: string): string =
-  ## Empty name picks the next free integer session id, starting at 1.
+  ## Empty name defaults to the directory name, deconflicted with a counter:
+  ## mpx, mpx0, mpx1, ...
   if name.len > 0:
     return name
+  let base = defaultName()
   let dir = getEnv("XDG_RUNTIME_DIR", getEnv("TMPDIR", "/tmp")) / "mpx"
   createDir(dir)
-  # Claim the id with a lock file so concurrent `mpx new` calls don't collide
-  var n = 1
+  # Claim the name with a lock file so concurrent `mpx new` calls don't collide
+  var i = -1
   while true:
-    if fileExists(dir / $n & ".sock") or fileExists(dir / $n & ".lock"):
-      inc n
+    let candidate = if i < 0: base else: base & $i
+    inc i
+    if fileExists(dir / candidate & ".sock") or fileExists(dir / candidate & ".lock"):
       continue
-    let fd = posix.open((dir / $n & ".lock").cstring, O_CREAT or O_EXCL or O_WRONLY, 0o600)
+    let fd = posix.open((dir / candidate & ".lock").cstring, O_CREAT or O_EXCL or O_WRONLY, 0o600)
     if fd < 0:
-      inc n  # someone else claimed it between the check and the create
-      continue
+      if errno == EEXIST:
+        continue  # someone else claimed it between the check and the create
+      raise newException(OSError, "cannot create session lock in " & dir)
     discard posix.close(fd)
+    result = candidate
     break
-  result = $n
 
 proc requireSession*(name: string): string =
   ## Session name for attach/kill: error out if empty.
