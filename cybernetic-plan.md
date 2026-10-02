@@ -59,6 +59,14 @@ push, no nimble install after commits.
 
 ## Current State
 
+**Complete: all 9 steps done, all issues closed.** Windows support
+ships (ConPTY, loopback TCP, identity-probed isActive, reclaimed
+session names, command args with `--`), all five CI workflows green,
+README documents Windows. What remains below is the historical trail
+of how it got here. Nothing is left in progress; a future effort
+should start a fresh plan (passthrough mode on Win11 22000+ is the
+noted future hardening candidate).
+
 Steps 1-5 done. `src/mpx/win.nim` is the one import layer: it re-exports
 std/winlean and declares what winlean genuinely lacks (ConPTY trio +
 HPCON, STARTUPINFOEXW + attribute-list procs,
@@ -208,10 +216,9 @@ double-bind the same port (SO_EXCLUSIVEADDRUSE now), and the posix
 client's unselectable-stdin fallback loop never noticed EOF and hung
 forever on `attach < /dev/null` in this sandbox.
 
-Known wrinkles left open: stale .port files make isActive report other
-sessions as alive (connect success is not session identity; the CI
-windows tests in step 7 should cover this), and this sandbox's
-/dev/null does not support epoll, which is what exposed the EOF bug.
+Known wrinkles left open: none. The stale .port identity wrinkle
+closed Oct 2 (see the eighth-bug addendum below); the /dev/null epoll
+note was this sandbox's quirk, not mpx's.
 
 Local re-verification after all fixes: posix build + nimble test
 (29 OK) + nimble example green; whole-binary `nim check --os:windows`
@@ -226,6 +233,29 @@ debug builds put live state. Fixed by declaring lpSize ptr uint (the
 call site now type-checks against it, so it cannot regress silently).
 Proven with a sentinel-dword probe under wine, fixed, verified on beck:
 daemon starts in both build modes, `new cmd` green.
+
+Eighth round (Oct 2, plan-finishing): three issues closed.
+
+1. Stale .port identity: a connect proved *a* listener, not *this
+session's* listener, and a dead session's port is exactly what the
+next daemon claims in the base-port scan. isActive on Windows now
+sends an mkIdent probe and requires the daemon's own name back
+(500ms SO_RCVTIMEO so ls cannot hang on a wedged loop); ls, kill and
+attach all route through it, so a stale .port can no longer resurrect
+a dead session or aim kill at the wrong daemon.
+2. Burned names: a failed `new` left its .lock behind, so auto names
+marched a counter (~, ~0, ~1). The failed client now sweeps its claim
+(dying daemon, new spawn, and daemon-mode exception paths), and
+resolveSession reclaims lock/endpoint garbage older than 2s whose
+session is not active instead of skipping the name forever.
+3. Multi-word commands: `mpx new sleep 30` exec'd a bare `sleep`.
+Positionals past the command now ride along as its argv, with a `--`
+separator in the CLI (and in the daemon re-exec, before the -l/-p
+flags) so a command's own flags survive parsing.
+
+All verified: posix nimble test (31 OK) + example (13 flows), windows
+check clean, full test_windows.nim green on beck (7 flows), user's
+beck mpx.exe refreshed with the fixed release build.
 
 ## Steps
 
@@ -388,27 +418,33 @@ daemon starts in both build modes, `new cmd` green.
   compiled here with x86_64-w64-mingw32-gcc, which turns out to be
   installed despite the "no mingw" note above) found and fixed six real
   Windows bugs; see the step 6 addendum in Current State.
-- [ ] 7. **Tests and example.** Read tests/test1.nim and example/
-  example.nim first, then extend: windows branches exercise openPty +
-  ConPTY roundtrip with the resolved shell and daemon-over-loopback at
-  wire level (no console needed; precedent: wmux tests drive the
-  protocol directly). Keep posix paths intact. nimble test must pass on
-  both ubuntu and windows runners. Verify: nimble test + nimble example
-  green locally (posix).
-- [ ] 8. **CI.** New .github/workflows/windows-amd64.yml mirroring
+- [x] 7. **Tests and example.** Done. tests/test_windows.nim drives the
+  beck-verified flow end to end through the real binary (new cmd,
+  roundtrip, Ctrl-G, snapshot, default shell, args passthrough, ls,
+  kill sweep, stale-.port identity) and runs in nimble test on Windows;
+  CI runs it on every push. Posix: test1.nim unit coverage (31 tests)
+  plus the `--` separator cases; example.nim grew failed-start cleanup,
+  name reclaim, and command-args flows. nimble test + nimble example
+  green locally and on the beck VM. Also fixed here: the pre-existing
+  multi-word-command drop noted above.
+- [x] 8. **CI.** Done, as .github/workflows/windows.yml: windows-latest,
+  nim c release to mpx.exe, nimble test (the runtime smoke), zip with
+  VERSION + README, artifact upload, capocasa.dev upload on main;
+  release.yml waits on it and attaches mpx-windows-amd64.zip. All five
+  workflows green on main; the CI artifact itself smoke-verified on
+  beck. Original plan text: new .github/workflows/windows-amd64.yml mirroring
   linux-amd64.yml: runs-on windows-latest, build to mpx.exe, nimble
   test, package as zip (mpx-windows-amd64/ with mpx.exe, VERSION,
   README.md), artifact upload, capocasa.dev upload on main. release.yml:
   add windows-amd64.yml to the workflow wait list and
   mpx-windows-amd64.zip to Collect archive files (and its ls).
   Verify: YAML valid (`nim` not needed), steps mirror existing files.
-- [ ] 9. **README + final review.** Replace "Windows: not supported"
-  with a Windows section: Win10 1809+ floor, loopback TCP transport
-  with the same name-gating caveat as -l, detach key unchanged, and the
-  honest transparency asterisk (conhost re-renders the stream; passthrough
-  mode is possible future hardening on Win11 22000+). Then the skill's
-  Finishing pass: whole-diff review, full local matrix (build, test,
-  example, check --os:windows on src/mpx.nim), clean committed tree.
+- [x] 9. **README + final review.** Done. README: install line now points
+  Windows at the zip/source, a Windows section covers the 1809+ floor,
+  loopback transport with the name-gating caveat, and the conhost
+  re-render asterisk; options gained the `--` entry. Finishing pass:
+  whole-diff review done, full matrix green (posix build/test/example,
+  check --os:windows, beck runtime suite), tree committed clean.
 
 ## Verification commands (posix, run every step)
 

@@ -66,13 +66,24 @@ proc parsePort(flag, value: string): int =
 
 proc parseCliArgs*(args: seq[string]): Opts =
   ## Parse argv (without argv[0]). Raises ValueError on anything wrong.
+  ## A bare `--` ends option parsing: the rest are positionals, so a
+  ## command's own flags (`mpx daemon work -- sh -c '...`) survive.
   var i = 0
+  var noMoreOpts = false
   while i < args.len:
     let arg = args[i]
     var
       name = ""
       inlineValue = ""
       hasInline = false
+    if noMoreOpts:
+      result.sessions.add arg
+      inc i
+      continue
+    if arg == "--":
+      noMoreOpts = true
+      inc i
+      continue
     if arg.startsWith("--") and arg.len > 2:
       let body = arg[2 ..^ 1]
       let eq = body.find('=')

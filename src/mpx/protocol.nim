@@ -15,6 +15,10 @@ type
     mkDetach = 4'u8   # client -> daemon: detach
     mkError = 5'u8    # daemon -> client: error message
     mkAttached = 6'u8 # daemon -> client: attach accepted
+    mkIdent = 7'u8    # both ways: "which session is this?" / "<name>".
+                      # Lets a probe tell whether the listener it reached
+                      # is the session its .port file named, or a younger
+                      # daemon that claimed the port in the base-port scan.
 
 const
   # v2: the payload length is a 32-bit big-endian field. v1's single length
@@ -107,6 +111,14 @@ proc takeFrame*(buf: var seq[byte], kind: var MsgKind,
   payload = buf[HeaderSize ..< HeaderSize + plen]
   buf.delete(0 ..< HeaderSize + plen)
   result = true
+
+when defined(windows):
+  proc setRecvTimeoutMs*(fd: SocketHandle, ms: int) =
+    ## Cap a blocking recv, so a probe cannot hang ls forever on a
+    ## daemon that took the connection but never answers.
+    var v: DWORD = ms.DWORD
+    discard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, addr v,
+                       sizeof(v).SockLen)
 
 proc setNonBlocking*(fd: SocketHandle) =
   when defined(windows):

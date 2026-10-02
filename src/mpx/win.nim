@@ -126,6 +126,10 @@ const
   # Winsock socket types (winlean has AF_* but not SOCK_*)
   SOCK_STREAM* = 1'i32
 
+  # Receive timeout. Winsock takes a DWORD millisecond count here, not
+  # posix's timeval.
+  SO_RCVTIMEO* = 0x1006'i32
+
 proc initWinsock*() =
   ## WSAStartup is refcounted per process; one call at startup covers every
   ## socket mpx makes. 2.2 is the only version that has ever mattered.

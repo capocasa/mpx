@@ -34,24 +34,6 @@ proc die*(msg: string) =
   stderr.writeLine "mpx: " & msg
   quit(1)
 
-proc pathPresent(p: string): bool =
-  # fileExists is false for sockets; lstat only says the path is there.
-  # A .port file is a regular file, so plain fileExists works.
-  when defined(windows):
-    fileExists(p)
-  else:
-    var st: Stat
-    lstat(p.cstring, st) == 0
-
-proc cleanSessionFiles(sessionName: string) =
-  for ext in [EndpointExt, ".lock", ".pid"]:
-    let p = socketPath(sessionName).changeFileExt(ext)
-    if pathPresent(p):
-      try:
-        removeFile(p)
-      except OSError:
-        discard
-
 proc cleanStale(sessionName: string) =
   var stale = false
   for ext in [EndpointExt, ".lock", ".pid"]:
@@ -93,14 +75,20 @@ proc main() =
 
   var sessionName = if rest.len > 0: rest[0] else: ""
   var cmd = if rest.len > 1: rest[1] else: defaultShell()
+  var cmdArgs: seq[string]
 
   case mode
   of "daemon", "new":
     # Disambiguate: one argument that is an existing command is the command,
     # not a session name. `mpx new htop` runs htop in an auto-numbered session.
+    # Everything after the command rides along as its arguments: `mpx new
+    # sleep 30` execs `sleep 30`, not a bare `sleep` that dies at once.
     if sessionName.len > 0 and findExe(sessionName).len > 0:
       cmd = sessionName
+      cmdArgs = if rest.len > 1: rest[1 ..^ 1] else: @[]
       sessionName = ""
+    else:
+      cmdArgs = if rest.len > 2: rest[2 ..^ 1] else: @[]
     sessionName = resolveSession(sessionName)
   of "attach", "kill":
     if sessionName.len == 0:
@@ -120,8 +108,13 @@ proc main() =
   case mode
   of "daemon":
     try:
-      runDaemon(sessionName, cmd, cfg, newSession(sessionName, cmd))
+      runDaemon(sessionName, cmd & (if cmdArgs.len > 0: " " & cmdArgs.join(" ") else: ""),
+                cfg, newSession(sessionName, cmd, cmdArgs))
     except CatchableError:
+      # Whatever runDaemon managed to claim (lock, port, pid) is
+      # garbage now; a name must not stay burned because a daemon died
+      # before its cleanup path ran.
+      cleanSessionFiles(sessionName)
       die(getCurrentExceptionMsg())
   of "attach":
     try:
@@ -147,6 +140,9 @@ proc main() =
         args.add(["-p", $opts.port])
       if opts.log:
         args.add("--log")
+      if cmdArgs.len > 0:
+        args.add("--")
+        args.add(cmdArgs)
       when defined(windows):
         # Same detachment the posix fork path earns with setsid: no
         # console at all, free of any job the spawning terminal put us
@@ -182,6 +178,9 @@ proc main() =
           sleep(50)
         discard closeHandle(pi.hProcess)
         if not ready:
+          # The claimed name would otherwise be skipped by every future
+          # auto-naming pass: resolveSession honors the lock file.
+          cleanSessionFiles(sessionName)
           die("daemon failed to start: " & sessionName)
       else:
         let pid = fork()
@@ -216,6 +215,7 @@ proc main() =
             break
           sleep(50)
         if not ready:
+          cleanSessionFiles(sessionName)
           die("daemon failed to start: " & sessionName)
     try:
       runClient(sessionName, cfg)

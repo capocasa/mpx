@@ -68,6 +68,13 @@ suite "cli":
     expect(ValueError):
       discard parseCliArgs(@["daemon", "-x"])
 
+  test "double dash stops option parsing":
+    let o = parseCliArgs(@["daemon", "work", "--", "sh", "-c", "echo hi"])
+    check o.sessions == @["daemon", "work", "sh", "-c", "echo hi"]
+    check not o.log and o.listen == ""
+    check parseCliArgs(@["--", "-l"]).sessions == @["-l"]
+    check parseCliArgs(@["daemon", "-"]).sessions == @["daemon", "-"]
+
   test "missing value errors":
     expect(ValueError):
       discard parseCliArgs(@["daemon", "-l"])

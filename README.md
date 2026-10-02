@@ -4,7 +4,7 @@ Transparent terminal multiplexer. Your terminal emulator (Ghostty, etc.) talks
 directly to the shell. mpx just owns the PTY and forwards bytes. No re-rendering,
 no escape sequence mangling, no scrollback theft.
 
-> **Status: early alpha.** Expect breakage between versions — commands, flags
+> **Status: early alpha.** Expect breakage between versions: commands, flags
 > and behavior change without notice. Actively developed.
 
 ## Install
@@ -21,8 +21,9 @@ Or from source:
 nimble install
 ```
 
-Both install the `mpx` binary. Windows: not supported (POSIX-only by
-nature — PTYs, unix sockets, termios); see the CI matrix for what's built.
+Both install the `mpx` binary. Windows: supported on 10 1809+
+(see [Windows](#windows)); the curl one-liner is a posix shell, so there
+grab the release zip or `nimble install` from source.
 
 ## Local usage
 
@@ -70,6 +71,20 @@ mpx k main   # kill
 When the program inside a session exits, the session ends and disappears
 from `mpx ls`.
 
+## Windows
+
+Same commands, same Ctrl-G detach, on Windows 10 1809+ (the ConPTY floor).
+
+Under the hood the transport differs: no unix sockets, so each daemon
+listens on loopback TCP and records its port in `%TEMP%\mpx\<name>.port`.
+Session names gate the port the same way `-l` gates remote access:
+convenience, not a boundary.
+
+One honest asterisk: on Windows the byte stream passes through ConPTY, and
+conhost re-renders it. mpx still never parses or rewrites anything itself,
+but the "your emulator talks directly to the shell" promise is a POSIX
+promise. Passthrough mode is possible future hardening.
+
 ## Options
 
 There is no config file. Everything is a command line flag, on any
@@ -86,6 +101,8 @@ mpx -l 10.0.0.4:4534 daemon work   # same as: mpx daemon work -l 10.0.0.4:4534
 - `-p, --port port` TCP base port, overrides the port in `--listen`
 - `--log` appends to `$XDG_DATA_HOME/mpx/mpx-YYYY.log`
 - `-v, --version`, `-h, --help`
+- `--` ends option parsing; everything after it belongs to the session's
+  command: `mpx new work -- sh -c 'tmux new'` passes the `-c` to sh, not mpx
 
 Unknown flags, missing values, and malformed `host:port` are errors, not
 guesses. Without `-l`, mpx runs on a unix socket only and logs nothing.

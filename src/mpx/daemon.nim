@@ -76,14 +76,14 @@ when not defined(windows):
   proc onShutdown(sig: cint) {.noconv.} =
     shutdownRequested.store(true, moRelaxed)
 
-proc newSession*(name, cmd: string): Session =
+proc newSession*(name, cmd: string, args: openArray[string] = []): Session =
   ## Built from mpx.nim's main on purpose, never inside runDaemon: the
   ## Windows ConPTY spawn in here must run at main's stack depth. One
   ## frame deeper, inside runDaemon, the spawned child does not get
   ## attached to the pseudoconsole on Win11 26100 in this mingw build.
 
   result.name = name
-  result.pty = openPty(cmd)
+  result.pty = openPty(cmd, args)
   result.running = true
   result.term = newTerminal(80, 24, 10000)  # larger scrollback
 
@@ -289,6 +289,13 @@ proc feedClient(session: var Session, log: Logger, fd: SocketHandle,
       return false
     if not session.takeClientFrame(ci, kind, payload):
       return true  # no complete frame left: wait for more bytes
+    if kind == mkIdent:
+      # Identity probe (isActive on Windows): answer with the session
+      # name, leave the client unvetted, it hangs up right after.
+      if not session.queueClient(ci, mkIdent,
+          session.name.toOpenArrayByte(0, session.name.len-1)):
+        return false
+      continue
     if kind == mkAttach and session.clients[ci].vetted.not:
       # Unvetted TCP client: check the session name
       if payload == session.name.toOpenArrayByte(0, session.name.len-1):

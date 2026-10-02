@@ -162,6 +162,69 @@ doAssert not sockExists(sigRt / "mpx" / "k9demo.sock"), "attach should remove st
 echo "example: attach cleans up after a SIGKILLed daemon verified"
 removeDir(sigRt)
 
+# A daemon that dies before it binds (command not found) fails the client
+# cleanly and leaves no half-claimed name behind
+let failRt = getTempDir() / "mpx_example_fail"
+removeDir(failRt)
+createDir(failRt)
+let (failOut, failRc) = runTimed("env XDG_RUNTIME_DIR=" & failRt & " " & bin &
+                                  " new faildemo /nonexistent 2>&1", 12)
+doAssert failRc != 0, "new with a dead-on-arrival command should fail"
+doAssert "daemon failed to start" in failOut,
+         "expected a daemon-start failure, got: " & failOut
+for ext in [".sock", ".lock", ".pid"]:
+  doAssert not sockExists(failRt / "mpx" / ("faildemo" & ext)),
+          "failed start left " & ext & " behind"
+echo "example: failed new leaves no session files verified"
+removeDir(failRt)
+
+# A hard-killed daemon's name must not burn: the next auto-named claim
+# reclaims the garbage instead of marching a counter suffix
+let reclaimRt = getTempDir() / "mpx_example_reclaim"
+let burnDir = getTempDir() / "mpx_example_burnname"
+removeDir(reclaimRt)
+removeDir(burnDir)
+createDir(burnDir)
+discard startProcess(bin, args=["daemon", "burnname", "/bin/cat"],
+                     env={"XDG_RUNTIME_DIR": reclaimRt}.newStringTable,
+                     options={poDaemon})
+let burnPid = waitForSession(reclaimRt, "burnname")
+discard posix.kill(burnPid.Pid, SIGKILL)
+sleep(2200)  # the reclaim grace window must see the claim as old
+doAssert sockExists(reclaimRt / "mpx" / "burnname.sock"),
+         "SIGKILL should leave the socket for the reclaim to sweep"
+let (reclaimOut, reclaimRc) = runTimed(
+    "(sleep 1) | env XDG_RUNTIME_DIR=" & reclaimRt & " " & bin &
+    " 2>&1 > /dev/null", 10, burnDir)
+doAssert reclaimRc == 0, "auto-named new over garbage failed: " & reclaimOut
+let (reclaimLs, _) = execCmdEx("env XDG_RUNTIME_DIR=" & reclaimRt & " " & bin & " ls")
+doAssert "burnname" in reclaimLs,
+         "reclaimed session missing from ls: " & reclaimLs
+doAssert "burnname0" notin reclaimLs,
+         "name marched to a counter instead of being reclaimed: " & reclaimLs
+echo "example: killed daemon's name is reclaimed, not counted verified"
+discard execCmdEx("env XDG_RUNTIME_DIR=" & reclaimRt & " " & bin & " ki burnname")
+removeDir(reclaimRt)
+removeDir(burnDir)
+
+# Commands carry their arguments, and `--` guards a command's own
+# flags from mpx's: `sh -c ...` reaches the pty intact
+discard startProcess(bin, args=["daemon", "multword", "--",
+                               "/bin/sh", "-c", "echo multwordmark; exec cat"],
+                     options={poDaemon})
+var multUp = false
+for i in 1..40:
+  if sockExists(RuntimeDir / "mpx" / "multword.sock"):
+    multUp = true
+    break
+  sleep(250)
+doAssert multUp, "multword daemon never started"
+let (multOut, _) = runTimed("(sleep 1) | ./mpx attach multword", 5)
+doAssert "multwordmark" in multOut,
+         "command arguments were dropped: " & multOut
+echo "example: command arguments passed through verified"
+discard execCmdEx(bin & " kill multword")
+
 # The default action is `new`: bare `mpx` starts a session named after
 # the directory and attaches to it. Commands work by unambiguous prefix,
 # and `attach` with no name picks the oldest live session.

@@ -44,9 +44,12 @@ proc runMpx(args: seq[string], chunks: seq[string] = @[],
   result.exitCode = p.peekExitCode()
   p.close()
 
+const IdOld = "identold"   # dies hard mid-run, port gets re-claimed
+const IdNew = "identnew"   # the younger daemon that takes the freed port
+
 # Sweep leftovers from a previous run; kill of a dead session is
 # expected to die (stale-file cleanup), the exit code is ignored
-for s in [Session, Shell]:
+for s in [Session, Shell, IdOld, IdNew, "winargs"]:
   discard runMpx(@["kill", s], secs = 15)
 
 # new cmd: daemon spawns detached, client attaches, `echo zkmark`
@@ -79,8 +82,43 @@ doAssert Session in lsOut.output and Shell in lsOut.output,
   "ls missing sessions: " & lsOut.output
 echo "test: ls lists both sessions"
 
+# Command arguments ride along: `cmd /k echo winargmark` keeps the shell
+# alive after echoing, so the mark must come back through the pty
+let argOut = runMpx(@["new", "winargs", "cmd", "/k", "echo", "winargmark"],
+                    chunks = @["\a"])
+doAssert argOut.exitCode == 0, "new with command args failed: " & argOut.output
+doAssert "winargmark" in argOut.output,
+  "command arguments were dropped: " & argOut.output
+echo "test: command arguments passed through verified"
+
+# Identity: a hard-killed daemon's stale .port names a port the next
+# daemon re-claims in the base-port scan. ls and attach must not be
+# fooled into seeing the dead session behind the younger daemon.
+let startOld = runMpx(@["new", IdOld, "cmd"], chunks = @["\a"])
+doAssert startOld.exitCode == 0, "identity setup failed: " & startOld.output
+let oldPid = readFile(mpxDir() / (IdOld & ".pid")).strip.parseInt
+let tk = execCmdEx("taskkill /F /PID " & $oldPid)
+doAssert tk.output.len > 0 and "SUCCESS" in tk.output.toUpperAscii,
+  "taskkill of the old daemon failed: " & tk.output
+sleep(1000)  # let the port go free before the next daemon scans
+let startNew = runMpx(@["new", IdNew, "cmd"], chunks = @["\a"])
+doAssert startNew.exitCode == 0, "younger session failed: " & startNew.output
+doAssert fileExists(mpxDir() / (IdOld & ".port")),
+  "identity test needs the stale .port to still exist"
+let idLs = runMpx(@["ls"], secs = 15)
+doAssert IdNew in idLs.output, "ls missing the live session: " & idLs.output
+doAssert IdOld notin idLs.output,
+  "stale .port resurrected a dead session in ls: " & idLs.output
+let idAtt = runMpx(@["attach", IdOld], closeAfterMs = 1000)
+doAssert idAtt.exitCode != 0, "attach to a dead session must fail"
+doAssert "cleaned stale" in idAtt.output,
+  "expected stale-file cleanup on attach, got: " & idAtt.output
+doAssert not fileExists(mpxDir() / (IdOld & ".port")),
+  "attach should have swept the stale .port"
+echo "test: stale .port identity verified (ls, attach)"
+
 # kill sweeps processes and files
-for s in [Session, Shell]:
+for s in [Session, Shell, IdNew, "winargs"]:
   let k = runMpx(@["kill", s], secs = 20)
   doAssert k.exitCode == 0, "kill " & s & " failed: " & k.output
   doAssert not fileExists(mpxDir() / (s & ".port")),
