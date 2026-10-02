@@ -253,9 +253,13 @@ Positionals past the command now ride along as its argv, with a `--`
 separator in the CLI (and in the daemon re-exec, before the -l/-p
 flags) so a command's own flags survive parsing.
 
-All verified: posix nimble test (31 OK) + example (13 flows), windows
-check clean, full test_windows.nim green on beck (7 flows), user's
-beck mpx.exe refreshed with the fixed release build.
+All verified: posix nimble test (31 OK) + example (18 flows, run
+twice back to back with zero leaked daemons), windows check clean,
+full test_windows.nim green on beck (7 flows), user's beck mpx.exe
+refreshed with the fixed release build. Post-script: the first cut of
+the reclaim example block was vacuous (workdir basename wasn't the
+burned name, substring assert) and leaked its daemon; rewritten with
+an exact-line assert and its own kill, then verified twice.
 
 ## Steps
 

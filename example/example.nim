@@ -181,9 +181,10 @@ removeDir(failRt)
 # A hard-killed daemon's name must not burn: the next auto-named claim
 # reclaims the garbage instead of marching a counter suffix
 let reclaimRt = getTempDir() / "mpx_example_reclaim"
-let burnDir = getTempDir() / "mpx_example_burnname"
+let reclaimHome = getTempDir() / "mpx_example_reclaimhome"
+let burnDir = reclaimHome / "burnname"  # basename is the name to reclaim
 removeDir(reclaimRt)
-removeDir(burnDir)
+removeDir(reclaimHome)
 createDir(burnDir)
 discard startProcess(bin, args=["daemon", "burnname", "/bin/cat"],
                      env={"XDG_RUNTIME_DIR": reclaimRt}.newStringTable,
@@ -198,14 +199,19 @@ let (reclaimOut, reclaimRc) = runTimed(
     " 2>&1 > /dev/null", 10, burnDir)
 doAssert reclaimRc == 0, "auto-named new over garbage failed: " & reclaimOut
 let (reclaimLs, _) = execCmdEx("env XDG_RUNTIME_DIR=" & reclaimRt & " " & bin & " ls")
-doAssert "burnname" in reclaimLs,
+proc lsHas(name: string): bool =
+  for l in reclaimLs.splitLines:
+    if l.strip == name:
+      return true
+  false
+doAssert lsHas("burnname"),
          "reclaimed session missing from ls: " & reclaimLs
-doAssert "burnname0" notin reclaimLs,
+doAssert not lsHas("burnname0"),
          "name marched to a counter instead of being reclaimed: " & reclaimLs
 echo "example: killed daemon's name is reclaimed, not counted verified"
 discard execCmdEx("env XDG_RUNTIME_DIR=" & reclaimRt & " " & bin & " ki burnname")
 removeDir(reclaimRt)
-removeDir(burnDir)
+removeDir(reclaimHome)
 
 # Commands carry their arguments, and `--` guards a command's own
 # flags from mpx's: `sh -c ...` reaches the pty intact
