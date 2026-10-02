@@ -185,7 +185,7 @@ else:
     si[].StartupInfo.hStdInput = INVALID_HANDLE_VALUE
     si[].StartupInfo.hStdOutput = INVALID_HANDLE_VALUE
     si[].StartupInfo.hStdError = INVALID_HANDLE_VALUE
-    var attrSize: DWORD = 0
+    var attrSize: uint = 0
     discard InitializeProcThreadAttributeList(nil, 1, 0, addr attrSize)
     var attrBuf = newSeq[byte](attrSize.int)
     si[].lpAttributeList = cast[LPPROC_THREAD_ATTRIBUTE_LIST](addr attrBuf[0])

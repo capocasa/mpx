@@ -55,7 +55,7 @@ proc ClosePseudoConsole*(hPC: HPCON) {.
 
 proc InitializeProcThreadAttributeList*(
     lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwAttributeCount: DWORD,
-    dwFlags: DWORD, lpSize: ptr DWORD): WINBOOL {.
+    dwFlags: DWORD, lpSize: ptr uint): WINBOOL {.
     stdcall, dynlib: kernel32, importc: "InitializeProcThreadAttributeList".}
 
 proc UpdateProcThreadAttribute*(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST,

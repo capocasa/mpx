@@ -217,6 +217,16 @@ Local re-verification after all fixes: posix build + nimble test
 (29 OK) + nimble example green; whole-binary `nim check --os:windows`
 clean; the beck flow listed above passes.
 
+Seventh bug (Oct 2, debug builds only): openPty SIGSEGV inside
+CreateProcessW's attribute-list walk. win.nim declared
+InitializeProcThreadAttributeList's lpSize as ptr DWORD, but the API is
+PSIZE_T and writes 8 bytes on the size query, zeroing the dword after
+the 4-byte stack local. Release codegen happened to put padding there;
+debug builds put live state. Fixed by declaring lpSize ptr uint (the
+call site now type-checks against it, so it cannot regress silently).
+Proven with a sentinel-dword probe under wine, fixed, verified on beck:
+daemon starts in both build modes, `new cmd` green.
+
 ## Steps
 
 - [x] 1. **win.nim import layer.** Done. `src/mpx/win.nim` imports and
