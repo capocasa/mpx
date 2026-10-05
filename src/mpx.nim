@@ -15,6 +15,7 @@ Usage:
   mpx [options] daemon [session] [cmd]  # start daemon in foreground (name defaults to dir basename, ~ in homedir)
   mpx [options] attach [session]       # attach to a session (default: oldest)
   mpx ls                               # list sessions
+  mpx session-name                     # print session name if inside one (exit 1 if not)
   mpx kill <session>                   # kill daemon and remove socket
 
 Any unambiguous command prefix works: mpx d, mpx at, mpx ne, mpx l, mpx ki.
@@ -110,7 +111,7 @@ proc main() =
           die("attach: no active sessions")
       else:
         die("kill: session name required")
-  of "ls":
+  of "ls", "session-name":
     discard
   else:
     die("unknown command: " & mode & ". " & UsageHint)
@@ -232,6 +233,13 @@ proc main() =
           # that still answer
           if isActive(name):
             echo name
+  of "session-name":
+    if rest.len > 0:
+      die("session-name: unexpected arguments")
+    let cur = currentSession()
+    if cur.len == 0:
+      die("not in a session")
+    echo cur
   of "kill":
     if not isActive(sessionName):
       # Daemon is gone; leftover files are stale garbage, clean them

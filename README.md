@@ -48,6 +48,9 @@ mpx attach
 # List sessions
 mpx ls
 
+# Prints the name of the session this process is running in (exit 1 if not inside one)
+mpx session-name
+
 # Detach: Ctrl-G
 #
 # One key, no prefix, on the same key on every layout (a German keyboard
@@ -64,6 +67,7 @@ mpx kill main
 mpx n main   # new
 mpx a main   # attach
 mpx l        # ls
+mpx session  # session-name
 mpx k main   # kill
 ```
 

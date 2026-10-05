@@ -20,7 +20,7 @@ const
   HelpFlags* = ["h", "help"]
 
   # Command words, matched by unambiguous prefix in main
-  Modes* = ["daemon", "attach", "new", "ls", "kill"]
+  Modes* = ["daemon", "attach", "new", "ls", "kill", "session-name"]
 
   FlagDocs* = [
     ("  -l, --listen <host:port>", "also listen on TCP; base port: each session takes the next free one"),

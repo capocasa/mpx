@@ -1,4 +1,4 @@
-import std/[os, times, strutils]
+import std/[os, times, strutils, sets]
 import protocol, runtime
 
 when defined(windows):
@@ -107,6 +107,119 @@ proc isActive*(sessionName: string): bool =
     copyMem(addr saddr.sun_path, pathCstr, pathCstr.len)
     result = connect(fd, cast[ptr SockAddr](addr saddr), sizeof(Sockaddr_un).SockLen) == 0
     discard posix.close(fd)
+
+when defined(windows):
+  import std/tables
+
+  proc parentPidMap(): Table[int, int] =
+    ## th32ProcessID -> th32ParentProcessID for every running process.
+    result = initTable[int, int]()
+    let snap = createToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == INVALID_HANDLE_VALUE:
+      return
+    var entry = PROCESSENTRY32W()
+    entry.dwSize = DWORD(sizeof(PROCESSENTRY32W))
+    if process32FirstW(snap, addr entry) != 0:
+      while true:
+        result[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+        if process32NextW(snap, addr entry) == 0:
+          break
+    discard closeHandle(snap)
+
+else:
+  when defined(macosx) or defined(macos):
+    type
+      ProcBsdinfo = object
+        pbi_flags: uint32
+        pbi_status: uint32
+        pbi_xstatus: uint32
+        pbi_pid: uint32
+        pbi_ppid: uint32
+        pbi_uid: uint32
+        pbi_gid: uint32
+        pbi_ruid: uint32
+        pbi_rgid: uint32
+        pbi_svuid: uint32
+        pbi_svgid: uint32
+        pbi_rfu: uint32
+        pbi_comm: array[17, cchar]
+        pbi_name: array[32, cchar]
+        pbi_nfiles: uint32
+        pbi_pgid: uint32
+        pbi_pjobid: uint32
+        pbi_totaluser: uint64
+        pbi_totalsystem: uint64
+        pbi_pidversion: uint32
+        pbi_pflags: uint32
+        pbi_pflags2: uint32
+        pbi_pflags3: uint32
+        pbi_pflags4: uint32
+
+    const PROC_PIDTBSDINFO = 3
+
+    proc proc_pidinfo(pid: cint, flavor: cint, arg: uint64,
+                      buffer: pointer, buffersize: cint): cint
+      {.importc, header: "<libproc.h>".}
+
+    proc parentPid(pid: int): int =
+      if pid <= 0:
+        return 0
+      var info: ProcBsdinfo
+      if proc_pidinfo(cint(pid), PROC_PIDTBSDINFO, 0'u64,
+                      addr info, cint(sizeof(ProcBsdinfo))) <= 0:
+        return 0
+      int(info.pbi_ppid)
+  else:
+    proc parentPid(pid: int): int =
+      if pid <= 0:
+        return 0
+      try:
+        for line in readFile("/proc/" & $pid & "/status").splitLines():
+          if line.startsWith("PPid:"):
+            return parseInt(line.split(':', 1)[1].strip())
+      except CatchableError:
+        discard
+      0
+
+proc sessionForDaemonPid*(pid: int): string =
+  ## Active session whose recorded daemon pid equals pid, or "".
+  let dir = mpxDir()
+  if not dirExists(dir):
+    return ""
+  for (_, f) in walkDir(dir):
+    if not f.endsWith(EndpointExt):
+      continue
+    let name = f.extractFilename.changeFileExt("")
+    if not isActive(name):
+      continue
+    if daemonPid(name) == pid:
+      return name
+  ""
+
+proc currentSession*(): string =
+  ## Session whose daemon is an ancestor of this process. Nearest ancestor
+  ## wins (inner session when sessions are nested). "" when not inside one.
+  when defined(windows):
+    let parents = parentPidMap()
+    var pid = parents.getOrDefault(int(getCurrentProcessId()), 0)
+    var seen = initHashSet[int]()
+    while pid > 0 and pid notin seen:
+      seen.incl(pid)
+      let name = sessionForDaemonPid(pid)
+      if name.len > 0:
+        return name
+      pid = parents.getOrDefault(pid, 0)
+    ""
+  else:
+    var pid = parentPid(int(getpid()))
+    var seen = initHashSet[int]()
+    while pid > 1 and pid notin seen:
+      seen.incl(pid)
+      let name = sessionForDaemonPid(pid)
+      if name.len > 0:
+        return name
+      pid = parentPid(pid)
+    ""
 
 proc oldestSession*(): string =
   ## The session for `mpx attach` with no name: the one whose daemon

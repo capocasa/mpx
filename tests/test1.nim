@@ -107,9 +107,11 @@ suite "command resolution":
     check matchModes("l") == @["ls"]
     check matchModes("k") == @["kill"]
     check matchModes("ki") == @["kill"]
+    check matchModes("s") == @["session-name"]
+    check matchModes("session") == @["session-name"]
 
   test "full names resolve to themselves":
-    for m in ["daemon", "attach", "new", "ls", "kill"]:
+    for m in ["daemon", "attach", "new", "ls", "kill", "session-name"]:
       check matchModes(m) == @[m]
 
   test "no match means the word is a new-argument, not a command":
@@ -118,7 +120,7 @@ suite "command resolution":
     check matchModes("list").len == 0
 
   test "empty prefix is ambiguous":
-    check matchModes("").len == 5
+    check matchModes("").len == 6
 
 suite "config":
   test "parseListen splits host and port":

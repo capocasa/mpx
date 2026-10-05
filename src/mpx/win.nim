@@ -89,6 +89,33 @@ proc CreateThread*(lpThreadAttributes: ptr SECURITY_ATTRIBUTES,
 proc GetCurrentProcessId*(): DWORD {.
   stdcall, dynlib: kernel32, importc: "GetCurrentProcessId".}
 
+# Process parent chain (kernel32 Toolhelp)
+
+type
+  PROCESSENTRY32W* = object
+    dwSize*: DWORD
+    cntUsage*: DWORD
+    th32ProcessID*: DWORD
+    th32DefaultHeapID*: ULONG_PTR
+    th32ModuleID*: DWORD
+    cntThreads*: DWORD
+    th32ParentProcessID*: DWORD
+    pcPriClassBase*: LONG
+    dwFlags*: DWORD
+    szExeFile*: array[260, Utf16Char]
+
+proc createToolhelp32Snapshot*(dwFlags: DWORD, th32ProcessID: DWORD): Handle {.
+  stdcall, dynlib: kernel32, importc: "CreateToolhelp32Snapshot".}
+
+proc process32FirstW*(hSnapshot: Handle, lppe: ptr PROCESSENTRY32W): WINBOOL {.
+  stdcall, dynlib: kernel32, importc: "Process32FirstW".}
+
+proc process32NextW*(hSnapshot: Handle, lppe: ptr PROCESSENTRY32W): WINBOOL {.
+  stdcall, dynlib: kernel32, importc: "Process32NextW".}
+
+const
+  TH32CS_SNAPPROCESS* = 0x00000002'i32
+
 # Winsock (ws2_32): the event-select pair is in winlean, the nonblocking
 # ioctl and the enum-reset that goes with event select are not.
 

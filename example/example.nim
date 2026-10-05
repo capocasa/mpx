@@ -2,7 +2,7 @@
 #
 # Run with: nimble example
 
-import std/[os, osproc, strutils, posix, strtabs, streams]
+import std/[os, osproc, strutils, posix, strtabs, streams, sequtils]
 
 putEnv("XDG_RUNTIME_DIR", "/tmp")
 
@@ -216,6 +216,26 @@ echo "example: command prefixes verified"
 let (noneOut, _) = runTimed(defEnv() & " " & bin & " at 2>&1", 3)
 doAssert "no active sessions" in noneOut, "expected a clean no-sessions error: " & noneOut
 echo "example: attach with no live sessions errors cleanly verified"
+
+# session-name outside a session exits 1 with no output
+let (snOut, snCode) = execCmdEx(defEnv() & " " & bin & " session-name")
+doAssert snCode == 1, "session-name outside a session should exit 1"
+doAssert snOut.strip.len == 0,
+         "session-name should produce no output on failure: " & snOut
+
+# session-name inside a session prints that session's name
+discard startProcess(bin, args=["daemon", "snbash", "/bin/bash"],
+                     env={"XDG_RUNTIME_DIR": defRt}.newStringTable,
+                     options={poDaemon})
+doAssert waitForSession(defRt, "snbash") > 0
+let (snIn, snInCode) = runTimed("(echo " & bin.quoteShell() & " session-name; sleep 1) | " &
+                                defEnv() & " " & bin & " attach snbash", 5)
+doAssert snInCode == 0, "attach to snbash failed: " & snIn
+doAssert snIn.splitLines().mapIt(it.strip).contains("snbash"),
+         "session-name inside session expected snbash, got: " & snIn
+echo "example: session-name verified"
+discard execCmdEx(defEnv() & " " & bin & " kill snbash")
+
 removeDir(defRt)
 removeDir(defDir)
 
