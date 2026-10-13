@@ -18,8 +18,10 @@ proc sockExists(p: string): bool =
 proc cleanup() =
   discard execCmd("pkill -f 'mpx daemon " & Session & "' 2>/dev/null")
   discard execCmd("pkill -f 'mpx daemon bashdemo' 2>/dev/null")
+  discard execCmd("pkill -f 'mpx daemon startnc' 2>/dev/null")
   removeFile(RuntimeDir / "mpx" / Session & ".sock")
   removeFile(RuntimeDir / "mpx" / "bashdemo.sock")
+  removeFile(RuntimeDir / "mpx" / "startnc.sock")
 
 proc runTimed(cmd: string, secs: int,
               workingDir = ""): tuple[output: string, exitCode: int] =
@@ -56,10 +58,39 @@ let (output, _) = runTimed("(echo 'hello from example'; sleep 1) | ./mpx attach 
 doAssert "hello from example" in output, "expected echo in output, got: " & output
 echo "example: client attach and echo verified"
 
+# The attach that rode session start does not clear the screen: the
+# terminal keeps its scrollback, the session just continues below it.
+doAssert "\x1b[2J" notin output, "start attach cleared the screen"
+echo "example: start attach leaves the screen alone verified"
+
+# First attach to a session whose program already printed: the model is
+# replayed, still without a clear, so pre-attach output survives below
+# whatever was on the terminal.
+discard startProcess("./mpx", args=["daemon", "startnc", "sh", "--", "-c", "echo ready; cat"],
+                     options={poDaemon})
+var ncUp = false
+for i in 1..40:
+  if sockExists(RuntimeDir / "mpx" / "startnc.sock"):
+    ncUp = true
+    break
+  sleep(250)
+doAssert ncUp, "startnc daemon never started"
+sleep(500)  # the echo must be in the model before the attach lands
+let (nc, _) = runTimed("./mpx attach startnc < /dev/null", 2)
+doAssert "ready" in nc, "start attach lost pre-attach output"
+doAssert "\x1b[2J" notin nc, "start attach cleared the screen"
+echo "example: start attach replays without clearing verified"
+
 # Verify snapshot on second attach (should contain previous output)
 let (snap, _) = runTimed("./mpx attach " & Session & " < /dev/null", 2)
 doAssert "hello from example" in snap, "snapshot missing previous output: " & snap
 echo "example: snapshot on reattach verified"
+
+# A reattach is not a start: the full repaint clears first
+doAssert "\x1b[2J" in snap, "reattach should clear and repaint"
+echo "example: reattach clears and repaints verified"
+
+discard execCmd("./mpx kill startnc 2>/dev/null")
 
 # Session ends when the contained program exits: an `exit` typed into the
 # shell ends bash, the daemon sees PTY EOF, and cleanup removes the socket.

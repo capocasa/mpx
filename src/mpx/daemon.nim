@@ -54,6 +54,8 @@ type
     ptyInq: seq[byte]  # posix: input the pty buffer would not take yet;
                        # windows: the handoff queue the writer thread drains
     running: bool
+    fresh: bool     # no snapshot served yet: the first attach rides session
+                    # start and must not wipe the client's terminal
     term: Terminal  # ttty side cache for attach snapshots
     when not defined(windows):
       sel: Selector[SocketHandle]
@@ -95,6 +97,7 @@ proc newSession*(name, cmd: string, args: openArray[string] = []): Session =
   result.name = name
   result.pty = openPty(cmd, args)
   result.running = true
+  result.fresh = true
   result.term = newTerminal(80, 24, 10000)  # larger scrollback
 
 proc clientIndex(session: Session, fd: SocketHandle): int =
@@ -210,7 +213,24 @@ proc queueSnapshot(session: var Session, i: int) =
   ## relative cursor moves after the attach, and a cursor left at the
   ## bottom row would smear that output across the screen.
   let g = session.term.grid
-  let snap = g.renderAnsiFull()
+  var snap = g.renderAnsiFull()
+  if session.fresh:
+    # The first snapshot of a session's life is the attach that rode its
+    # start. No clear there: the terminal keeps its screen and whatever
+    # scrollback it had, and the replay just flows below the cursor. A
+    # model with nothing on it yet leaves the terminal untouched and
+    # live output starts where the cursor already is. A model with
+    # content drops the leading clear and starts on a fresh line: the
+    # resize ahead of the snapshot guarantees exactly g.height screen
+    # rows, so the written screen anchors to the bottom whatever line
+    # the replay began on, and the absolute cursor move below holds.
+    session.fresh = false
+    if g.row == 0 and g.col == 0 and g.rows.allIt(it.len == 0):
+      return
+    const clear = "\x1b[2J\x1b[H"
+    let at = snap.find(clear)
+    if at >= 0:
+      snap = "\r\n" & snap[0 ..< at] & snap[at + clear.len ..^ 1]
   if snap.len > 0:
     let first = max(0, g.rows.len - g.height)
     let r = max(0, g.row - first)
