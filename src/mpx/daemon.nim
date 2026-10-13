@@ -68,6 +68,16 @@ type
       pspin: Spin          # guards ptyInq and the pty buffers
       stopEv, dataEv, inEv: Handle
 
+  Endpoint* = object
+    ## Bound listener(s) plus their endpoint files, claimed before the pty
+    ## is opened: a client that connects while openPty is still spawning
+    ## the program waits in the listen backlog instead of behind the spawn.
+    listenFd*: SocketHandle  ## the listener: unix on posix, the only one on windows
+    when not defined(windows):
+      tcpFd*: SocketHandle    ## extra TCP listener from -l, -1 without it
+    tcpPort*: int             ## bound TCP port, 0 without a TCP listener
+    tcpError*: string         ## why -l could not bind, "" when it did
+
 when not defined(windows):
   # Set by the signal handler, polled by the event loop: a signal interrupts
   # select (EINTR makes it return empty) and the loop condition picks it up.
@@ -382,11 +392,7 @@ when defined(windows):
           off += w
     return 0
 
-  proc runDaemon*(sessionName, cmd: string, cfg: Config,
-                  session: Session) =
-    var session = session  # params are immutable; the loop mutates this
-    let log = initLogger(cfg.log)
-    log.info "daemon: session=" & sessionName & " cmd=" & cmd
+  proc bindEndpoint*(sessionName: string, cfg: Config): Endpoint =
     removeSocket(sessionName)
     let path = socketPath(sessionName)
     # Loopback TCP is the transport on Windows: anonymous pipes do not mix
@@ -399,8 +405,16 @@ when defined(windows):
     # Record the daemon pid next to the port file: kill targets the exact
     # process without /proc or toolhelp snapshot walking.
     writeFile(path.changeFileExt("pid"), $getCurrentProcessId())
-    log.info "listening on tcp " & $ip & ":" & $port
-    log.info "listening on " & path
+    Endpoint(listenFd: listenFd, tcpPort: port)
+
+  proc runDaemon*(sessionName, cmd: string, cfg: Config,
+                  endpoint: Endpoint, session: Session) =
+    var session = session  # params are immutable; the loop mutates this
+    let log = initLogger(cfg.log)
+    log.info "daemon: session=" & sessionName & " cmd=" & cmd
+    let shown = if cfg.listen.len > 0: cfg.listen.rsplit(':', 1)[0] else: "127.0.0.1"
+    log.info "listening on tcp " & shown & ":" & $endpoint.tcpPort
+    log.info "listening on " & socketPath(sessionName)
 
     session.stopEv = createEvent(nil, 1, 0, nil)   # sticky: shutdown
     session.dataEv = createEvent(nil, 0, 0, nil)   # auto-reset: one drain per wake
@@ -410,7 +424,7 @@ when defined(windows):
         session.inEv == Handle(0) or listenEv == Handle(0) or
         listenEv == Handle(-1):
       raise newException(OSError, "event creation failed: " & $getLastError())
-    discard wsaEventSelect(listenFd, listenEv, FD_ACCEPT)
+    discard wsaEventSelect(endpoint.listenFd, listenEv, FD_ACCEPT)
     let reader = CreateThread(nil, 0, ptyReaderProc,
                               cast[pointer](addr session), 0, nil)
     let writer = CreateThread(nil, 0, ptyWriterProc,
@@ -453,10 +467,10 @@ when defined(windows):
           session.running = false
       elif idx == 2:
         var ne: WSANETWORKEVENTS
-        discard WSAEnumNetworkEvents(listenFd, listenEv, addr ne)
+        discard WSAEnumNetworkEvents(endpoint.listenFd, listenEv, addr ne)
         if (ne.lNetworkEvents and FD_ACCEPT) != 0:
           while true:
-            let clientFd = accept(listenFd, nil, nil)
+            let clientFd = accept(endpoint.listenFd, nil, nil)
             if clientFd == SocketHandle(-1):
               break
             setNonBlocking(clientFd)
@@ -500,7 +514,7 @@ when defined(windows):
     for c in session.clients:
       discard closeHandle(c.ev)
       discard closeSocket(c.fd)
-    discard closeSocket(listenFd)
+    discard closeSocket(endpoint.listenFd)
     discard closeHandle(listenEv)
     removeSocket(sessionName)
     removeLock(sessionName)
@@ -519,21 +533,7 @@ when defined(windows):
 
 else:
 
-  proc runDaemon*(sessionName, cmd: string, cfg: Config,
-                  session: Session) =
-    var session = session  # params are immutable; the loop mutates this
-    let log = initLogger(cfg.log)
-    # A client that vanished mid-broadcast must cost us the client, not the
-    # process: writes to its dead socket would raise SIGPIPE and take the
-    # daemon, and the session with it.
-    discard signal(SIGPIPE, SIG_IGN)
-    # SIGTERM/SIGINT/SIGHUP must run the cleanup below, not skip it: the
-    # default disposition kills the daemon mid-flight and leaves socket,
-    # pid, and lock files behind for attach to trip over.
-    discard signal(SIGTERM, onShutdown)
-    discard signal(SIGINT, onShutdown)
-    discard signal(SIGHUP, onShutdown)
-    log.info "daemon: session=" & sessionName & " cmd=" & cmd
+  proc bindEndpoint*(sessionName: string, cfg: Config): Endpoint =
     removeSocket(sessionName)
     let path = socketPath(sessionName)
     # Record the daemon pid next to the socket: kill targets the exact
@@ -556,44 +556,69 @@ else:
       raise newException(OSError, "bind failed: " & path)
     if listen(listenFd, 5) != 0:
       raise newException(OSError, "listen failed")
+    # The pty child execs the program right after fork: the listeners must
+    # close on exec, or every shell inherits them and a dead daemon's
+    # socket stays connectable as long as the shell lives.
+    discard fcntl(listenFd.cint, F_SETFD, FD_CLOEXEC)
+    result.listenFd = listenFd
 
     # Optional TCP listener. Session name gates access: TCP clients send
     # mkAttach with the session name, wrong names get dropped.
-    var tcpFd = SocketHandle(-1)
-    var tcpPort = 0
+    result.tcpFd = SocketHandle(-1)
     if cfg.listen.len > 0:
       try:
         let (ip, basePort) = parseListen(cfg.listen)
-        (tcpFd, tcpPort) = startTcpListener(ip, basePort)
-        log.info "listening on tcp " & cfg.listen.rsplit(':', 1)[0] & ":" & $tcpPort
+        (result.tcpFd, result.tcpPort) = startTcpListener(ip, basePort)
+        if result.tcpFd != SocketHandle(-1):
+          discard fcntl(result.tcpFd.cint, F_SETFD, FD_CLOEXEC)
       except ValueError, OSError:
-        log.info "tcp listener disabled: " & getCurrentExceptionMsg()
+        result.tcpError = getCurrentExceptionMsg()
+
+  proc runDaemon*(sessionName, cmd: string, cfg: Config,
+                  endpoint: Endpoint, session: Session) =
+    var session = session  # params are immutable; the loop mutates this
+    let log = initLogger(cfg.log)
+    # A client that vanished mid-broadcast must cost us the client, not the
+    # process: writes to its dead socket would raise SIGPIPE and take the
+    # daemon, and the session with it.
+    discard signal(SIGPIPE, SIG_IGN)
+    # SIGTERM/SIGINT/SIGHUP must run the cleanup below, not skip it: the
+    # default disposition kills the daemon mid-flight and leaves socket,
+    # pid, and lock files behind for attach to trip over.
+    discard signal(SIGTERM, onShutdown)
+    discard signal(SIGINT, onShutdown)
+    discard signal(SIGHUP, onShutdown)
+    log.info "daemon: session=" & sessionName & " cmd=" & cmd
+    if endpoint.tcpError.len > 0:
+      log.info "tcp listener disabled: " & endpoint.tcpError
+    elif endpoint.tcpFd != SocketHandle(-1):
+      log.info "listening on tcp " & cfg.listen.rsplit(':', 1)[0] & ":" & $endpoint.tcpPort
 
     # Everything the event loop touches is non-blocking: a single stalled
     # write (slow client, busy program) used to wedge the loop, freezing
     # the session for every client, including fresh attaches.
     setNonBlocking(session.pty.masterFd.SocketHandle)
     session.sel = newSelector[SocketHandle]()
-    session.sel.registerHandle(listenFd, {Event.Read}, listenFd)
-    if tcpFd != SocketHandle(-1):
-      session.sel.registerHandle(tcpFd, {Event.Read}, tcpFd)
+    session.sel.registerHandle(endpoint.listenFd, {Event.Read}, endpoint.listenFd)
+    if endpoint.tcpFd != SocketHandle(-1):
+      session.sel.registerHandle(endpoint.tcpFd, {Event.Read}, endpoint.tcpFd)
     session.sel.registerHandle(session.pty.masterFd.SocketHandle, {Event.Read}, session.pty.masterFd.SocketHandle)
 
-    log.info "listening on " & path
+    log.info "listening on " & socketPath(sessionName)
 
     while session.running and not shutdownRequested.load(moRelaxed):
       let events = session.sel.select(-1)
       for ev in events:
-        if ev.fd == listenFd.cint:
+        if ev.fd == endpoint.listenFd.cint:
           # New client on the unix socket: trusted, attach immediately
-          let clientFd = accept(listenFd, nil, nil)
+          let clientFd = accept(endpoint.listenFd, nil, nil)
           if clientFd != SocketHandle(-1):
             setNonBlocking(clientFd)
             discard session.addClient(clientFd, true)
             log.info "client attached fd=" & $clientFd.cint
-        elif ev.fd == tcpFd.cint:
+        elif ev.fd == endpoint.tcpFd.cint:
           # New TCP client: hold it until it names the right session
-          let clientFd = accept(tcpFd, nil, nil)
+          let clientFd = accept(endpoint.tcpFd, nil, nil)
           if clientFd != SocketHandle(-1):
             setNonBlocking(clientFd)
             discard session.addClient(clientFd, false)
@@ -642,9 +667,9 @@ else:
     # Cleanup
     for client in session.clients:
       discard posix.close(client.fd)
-    discard posix.close(listenFd)
-    if tcpFd != SocketHandle(-1):
-      discard posix.close(tcpFd)
+    discard posix.close(endpoint.listenFd)
+    if endpoint.tcpFd != SocketHandle(-1):
+      discard posix.close(endpoint.tcpFd)
     removeSocket(sessionName)
     removeLock(sessionName)
     try:

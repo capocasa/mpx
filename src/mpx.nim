@@ -108,8 +108,12 @@ proc main() =
   case mode
   of "daemon":
     try:
+      # Endpoint before pty: the socket is the daemon's only interface,
+      # and a client that connects while openPty is still spawning the
+      # program waits in the listen backlog instead of behind the spawn.
+      let endpoint = bindEndpoint(sessionName, cfg)
       runDaemon(sessionName, cmd & (if cmdArgs.len > 0: " " & cmdArgs.join(" ") else: ""),
-                cfg, newSession(sessionName, cmd, cmdArgs))
+                cfg, endpoint, newSession(sessionName, cmd, cmdArgs))
     except CatchableError:
       # Whatever runDaemon managed to claim (lock, port, pid) is
       # garbage now; a name must not stay burned because a daemon died
@@ -168,14 +172,22 @@ proc main() =
         # file, not for the process. A signaled handle catches an early
         # exit (bad cmd, bind failure) so it surfaces instead of hanging
         # until the timeout.
+        # Readiness backoff: a healthy daemon binds in a few ms, so poll
+        # finely at first (a fixed 50ms tick parked every cold start on a
+        # full tick), then back off so a wedged start cannot spin the CPU
+        # for the whole 5s window.
         var ready = false
-        for i in 1 .. 100:
+        var waitMs = 2
+        var waitedMs = 0
+        while waitedMs < 5000:
           if isActive(sessionName):
             ready = true
             break
           if waitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0:
             break
-          sleep(50)
+          sleep(waitMs)
+          inc waitedMs, waitMs
+          waitMs = min(waitMs * 2, 50)
         discard closeHandle(pi.hProcess)
         if not ready:
           # The claimed name would otherwise be skipped by every future
@@ -205,15 +217,23 @@ proc main() =
         # The daemon runs in the foreground forever; wait for its socket,
         # not for the process. WNOHANG catches an early exit (bad cmd, bind
         # failure) so it surfaces instead of hanging until the timeout.
+        # Readiness backoff: a healthy daemon binds in a few ms, so poll
+        # finely at first (a fixed 50ms tick parked every cold start on a
+        # full tick), then back off so a wedged start cannot spin the CPU
+        # for the whole 5s window.
         var ready = false
         var status: cint = 0
-        for i in 1 .. 100:
+        var waitMs = 2
+        var waitedMs = 0
+        while waitedMs < 5000:
           if isActive(sessionName):
             ready = true
             break
           if posix.waitpid(pid, status, WNOHANG) == pid:
             break
-          sleep(50)
+          sleep(waitMs)
+          inc waitedMs, waitMs
+          waitMs = min(waitMs * 2, 50)
         if not ready:
           cleanSessionFiles(sessionName)
           die("daemon failed to start: " & sessionName)
