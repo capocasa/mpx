@@ -1,11 +1,13 @@
 ## Command line parsing for mpx.
 ##
-## Flags may appear anywhere: before, between, or after the positional
-## arguments (`mpx -l 10.0.0.4:4534 daemon work` and `mpx daemon work -l
-## 10.0.0.4:4534` mean the same). Anything dash-prefixed must be a known
-## flag: unknown flags are an error, never a guess. Values live in the next
-## argument or after `=`, so a value that itself starts with '-' must use
-## the `=` form.
+## Flags may appear anywhere before the first non-command positional
+## (`mpx -l 10.0.0.4:4534 daemon work` and `mpx daemon work -l 10.0.0.4:4534`
+## mean the same). A word that matches no command means mpx was handed a
+## bare command: the rest of argv is that command's own args, dashes and
+## all (`mpx 3code -r` runs `3code -r`). From there on, anything
+## dash-prefixed must be a known flag: unknown flags are an error, never a
+## guess. Values live in the next argument or after `=`, so a value that
+## itself starts with '-' must use the `=` form.
 
 import std/strutils
 import mpx/config
@@ -103,6 +105,12 @@ proc parseCliArgs*(args: seq[string]): Opts =
       else:
         name = body
     else:
+      # First positional and not a command word: argv from here on is a
+      # bare command and its own flags, not mpx's.
+      if result.sessions.len == 0 and matchModes(arg).len == 0:
+        for j in i ..< args.len:
+          result.sessions.add args[j]
+        break
       result.sessions.add arg
       inc i
       continue

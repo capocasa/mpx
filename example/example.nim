@@ -262,6 +262,26 @@ doAssert "multwordmark" in multOut,
 echo "example: command arguments passed through verified"
 discard execCmdEx(bin & " kill multword")
 
+# A bare command owns all of argv after it: no mode word means the dash
+# args belong to the command, not to mpx (`mpx 3code -r` shape)
+let bareRt = getTempDir() / "mpxexb"
+let bareDir = getTempDir() / "mpx_exbare"
+removeDir(bareRt)
+removeDir(bareDir)
+createDir(bareDir)
+let (bareCmdOut, bareCmdRc) = runTimed("(sleep 1) | env XDG_RUNTIME_DIR=" & bareRt &
+                                        " " & bin & " sh -c 'echo bareflagmark; exec cat'" &
+                                        " 2>&1 > /dev/null", 5, bareDir)
+doAssert bareCmdRc == 0, "bare command with flags failed: " & bareCmdOut
+let (bareFlagOut, _) = runTimed("(sleep 1) | env XDG_RUNTIME_DIR=" & bareRt &
+                               " " & bin & " attach mpx_exbare", 5)
+doAssert "bareflagmark" in bareFlagOut,
+         "bare command's -c never reached the program: " & bareFlagOut
+echo "example: bare command with its own flags verified"
+discard execCmdEx("env XDG_RUNTIME_DIR=" & bareRt & " " & bin & " kill mpx_exbare")
+removeDir(bareRt)
+removeDir(bareDir)
+
 # The default action is `new`: bare `mpx` starts a session named after
 # the directory and attaches to it. Commands work by unambiguous prefix,
 # and `attach` with no name picks the oldest live session.

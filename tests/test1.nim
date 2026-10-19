@@ -68,6 +68,16 @@ suite "cli":
     expect(ValueError):
       discard parseCliArgs(@["daemon", "-x"])
 
+  test "bare command owns the rest of argv":
+    check parseCliArgs(@["3code", "-r"]).sessions == @["3code", "-r"]
+    check parseCliArgs(@["sh", "-c", "echo hi"]).sessions == @["sh", "-c", "echo hi"]
+    let o = parseCliArgs(@["-l", "10.0.0.4:4534", "3code", "-r"])
+    check o.listen == "10.0.0.4:4534"
+    check o.sessions == @["3code", "-r"]
+    # With a command word, the command's flags still need `--`
+    expect(ValueError):
+      discard parseCliArgs(@["daemon", "3code", "-r"])
+
   test "double dash stops option parsing":
     let o = parseCliArgs(@["daemon", "work", "--", "sh", "-c", "echo hi"])
     check o.sessions == @["daemon", "work", "sh", "-c", "echo hi"]
