@@ -40,8 +40,10 @@ when not defined(windows):
 
   when defined(macosx) or defined(macos):
     const TIOCSCTTY = 0x20007461'u32  # _IOW('t', 132) on BSD/macOS
+    const TIOCSPGRP = 0x80047476'u32  # _IOW('t', 118) on BSD/macOS
   else:
     const TIOCSCTTY = 0x540E'u32   # Linux
+    const TIOCSPGRP = 0x5410'u32   # Linux
   const
     TIOCSWINSZ = 0x5414'u32
     TIOCGWINSZ = 0x5413'u32
@@ -65,20 +67,48 @@ when not defined(windows):
 
     let pid = fork()
     if pid == 0:
-      # Child: become session leader, attach slave as controlling terminal
+      # Child: session leader on the slave, then fork the program into a
+      # process group of its own. A process group whose every member's
+      # parent sits outside its session is orphaned, and the kernel
+      # silently discards SIGTSTP for orphans: a directly exec'd program
+      # (the old code) hangs forever inside the sigwait after its suspend
+      # instead of stopping. The keeper is what a shell's presence does
+      # for a job: it makes the stop legal, and reports it.
       discard setsid()
       discard ioctl(slave, TIOCSCTTY, nil)
-      discard dup2(slave, 0)
-      discard dup2(slave, 1)
-      discard dup2(slave, 2)
-      if slave > 2:
-        discard close(slave)
       discard close(master)
+      let prog = fork()
+      if prog == 0:
+        discard setpgid(0, 0)
+        discard dup2(slave, 0)
+        discard dup2(slave, 1)
+        discard dup2(slave, 2)
+        if slave > 2:
+          discard close(slave)
 
-      let argv = allocCStringArray(@[exe] & @args)
-      discard execvp(exe.cstring, argv)
-      deallocCStringArray(argv)
-      quit(1)
+        let argv = allocCStringArray(@[exe] & @args)
+        discard execvp(exe.cstring, argv)
+        deallocCStringArray(argv)
+        quit(1)
+      discard setpgid(prog, prog)  # both sides race to set it; either wins
+      var pgrp: cint = prog
+      discard ioctl(slave, TIOCSPGRP, addr pgrp)
+      while true:
+        var status: cint
+        if waitpid(prog, status, WUNTRACED) != prog:
+          break
+        if WIFEXITED(status) or WIFSIGNALED(status):
+          break
+        if WIFSTOPPED(status):
+          # Say so on the slave: it rides the master stream to clients,
+          # no new plumbing. A stop with no shell in the session to drop
+          # to looks like a dead pane otherwise.
+          let note = "\r\n\x1b[?25h[mpx] program stopped (Ctrl-Z): no shell " &
+            "in this session to drop to. Detach with Ctrl-G, resume with " &
+            "kill -CONT " & $prog & "\r\n"
+          discard posix.write(slave, note.cstring, cint(note.len))
+      discard close(slave)
+      quit(0)
     elif pid < 0:
       discard close(master)
       discard close(slave)

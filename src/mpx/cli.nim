@@ -83,7 +83,11 @@ proc parseCliArgs*(args: seq[string]): Opts =
       inc i
       continue
     if arg == "--":
+      # Kept in sessions on purpose: main splits the session name from
+      # the command on it (an auto name can BE an existing command, so
+      # the name-vs-command guess must not run past it).
       noMoreOpts = true
+      result.sessions.add arg
       inc i
       continue
     if arg.startsWith("--") and arg.len > 2:

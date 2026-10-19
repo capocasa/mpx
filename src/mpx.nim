@@ -63,11 +63,13 @@ proc main() =
   # so `mpx htop` runs htop in a session and bare `mpx` starts a shell.
   var mode = "new"
   var rest: seq[string]
+  var hadMode = false  # a mode word led argv: `--` may split name from command
   if opts.sessions.len > 0:
     let matches = matchModes(opts.sessions[0])
     if matches.len == 1:
       mode = matches[0]
       rest = opts.sessions[1 ..^ 1]
+      hadMode = true
     elif matches.len > 1:
       die("ambiguous command: " & opts.sessions[0] & " (" & matches.join(", ") & "). " & UsageHint)
     else:
@@ -79,16 +81,35 @@ proc main() =
 
   case mode
   of "daemon", "new":
-    # Disambiguate: one argument that is an existing command is the command,
-    # not a session name. `mpx new htop` runs htop in an auto-numbered session.
-    # Everything after the command rides along as its arguments: `mpx new
-    # sleep 30` execs `sleep 30`, not a bare `sleep` that dies at once.
-    if sessionName.len > 0 and findExe(sessionName).len > 0:
-      cmd = sessionName
-      cmdArgs = if rest.len > 1: rest[1 ..^ 1] else: @[]
-      sessionName = ""
+    # A `--` after the mode word names the session explicitly: everything
+    # past it is the command and its own args. The daemon re-exec always
+    # uses this form, because the auto name can BE an existing command
+    # (a session named `mpx` started inside the mpx repo, `3code` in
+    # 3code's) and the name-vs-command guess below must not re-run inside
+    # the daemon: it would run mpx itself in the pty, bind a counter
+    # name, and leave the waiting client to time out on a session that
+    # never appeared.
+    let dd = rest.find("--")
+    if hadMode and dd >= 0 and dd <= 1:
+      sessionName = if dd == 1: rest[0] else: ""
+      if dd + 1 < rest.len:
+        cmd = rest[dd + 1]
+        cmdArgs = rest[(dd + 2) ..^ 1]
     else:
-      cmdArgs = if rest.len > 2: rest[2 ..^ 1] else: @[]
+      # Disambiguate: one argument that is an existing command is the
+      # command, not a session name. `mpx new htop` runs htop in an
+      # auto-numbered session. Everything after the command rides along
+      # as its arguments: `mpx new sleep 30` execs `sleep 30`, not a bare
+      # `sleep` that dies at once.
+      var tail = rest
+      if dd >= 2:
+        tail.delete(dd)  # the separator is syntax, not part of the command
+      if sessionName.len > 0 and findExe(sessionName).len > 0:
+        cmd = sessionName
+        cmdArgs = if tail.len > 1: tail[1 ..^ 1] else: @[]
+        sessionName = ""
+      else:
+        cmdArgs = if tail.len > 2: tail[2 ..^ 1] else: @[]
     sessionName = resolveSession(sessionName)
   of "attach", "kill":
     if sessionName.len == 0:
@@ -137,16 +158,19 @@ proc main() =
       # Re-exec as daemon: preserves argv[0] for kill-by-matching and
       # avoids forked-thread issues in the client
       let exe = getAppFilename()
-      var args = @[exe, "daemon", sessionName, cmd]
+      # `--` pins the name: the auto name can BE an existing command,
+      # and the daemon re-guessing name-vs-command runs mpx in the pty.
+      # Flags ride before it: after `--` everything is a positional.
+      var args = @[exe, "daemon", sessionName]
       if cfg.listen.len > 0:
         args.add(["-l", cfg.listen])
       if opts.port != 0:
         args.add(["-p", $opts.port])
       if opts.log:
         args.add("--log")
-      if cmdArgs.len > 0:
-        args.add("--")
-        args.add(cmdArgs)
+      args.add("--")
+      args.add(cmd)
+      args.add(cmdArgs)
       when defined(windows):
         # Same detachment the posix fork path earns with setsid: no
         # console at all, free of any job the spawning terminal put us

@@ -41,6 +41,11 @@ mpx new htop       # htop is a command, so: htop in session "mpx1"
 # Re-running `mpx new <name>` on an active session just attaches to it
 mpx new main
 
+# A session name that also names a command needs `--`, or mpx reads it
+# as the program (auto names come from the cwd: a session started in
+# ~/p/3code is named 3code)
+mpx new 3code -- 3code
+
 # Or start daemon separately, then attach (no name: oldest session)
 mpx daemon main
 mpx attach main
@@ -57,6 +62,11 @@ mpx ls
 # an abort nobody presses on purpose, and dvtm uses it as its mod key.
 # Ctrl-D is NOT a detach key: it is EOF, and it reaches the program so
 # shells, REPLs and pagers behave normally.
+#
+# Ctrl-Z reaches the program too. In a shell session the job suspends
+# and the prompt returns, as in any terminal. A session running a
+# command directly (`mpx 3code`) has no shell to drop to: the program
+# stops, mpx says so on screen, and `kill -CONT <pid>` resumes it.
 
 # Kill a session
 mpx kill main

@@ -244,6 +244,29 @@ discard execCmdEx("env XDG_RUNTIME_DIR=" & reclaimRt & " " & bin & " ki burnname
 removeDir(reclaimRt)
 removeDir(reclaimHome)
 
+# The auto name can BE an existing command (a session named `cat` started
+# in a directory called cat): `new` re-execs the daemon as
+# `mpx daemon cat -- /bin/cat`, and the daemon must not re-guess
+# name-vs-command, or it runs mpx itself in the pty, binds a counter
+# name, and the client times out on a session that never appeared.
+let collideRoot = getTempDir() / "mpx_ex_collide"
+let collideDir = collideRoot / "cat"
+removeDir(collideRoot)
+createDir(collideDir)
+for ext in [".sock", ".lock", ".pid"]:
+  removeFile(RuntimeDir / "mpx" / "cat" & ext)
+let (collideOut, _) = runTimed("(echo 'collide works'; sleep 1) | " & bin &
+                               " /bin/cat", 6, workingDir = collideDir)
+doAssert "collide works" in collideOut,
+         "session named like a command failed: " & collideOut
+doAssert sockExists(RuntimeDir / "mpx" / "cat.sock"),
+         "colliding session name never bound its socket: " & collideOut
+doAssert not sockExists(RuntimeDir / "mpx" / "cat0.sock"),
+         "colliding session name marched to a counter: " & collideOut
+echo "example: session named like a command keeps its name verified"
+discard execCmdEx(bin & " kill cat 2>/dev/null")
+removeDir(collideRoot)
+
 # Commands carry their arguments, and `--` guards a command's own
 # flags from mpx's: `sh -c ...` reaches the pty intact
 discard startProcess(bin, args=["daemon", "multword", "--",

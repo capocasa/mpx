@@ -79,11 +79,19 @@ suite "cli":
       discard parseCliArgs(@["daemon", "3code", "-r"])
 
   test "double dash stops option parsing":
+    # The sentinel is kept: main splits the session name from the command
+    # on it (an auto name can BE an existing command).
     let o = parseCliArgs(@["daemon", "work", "--", "sh", "-c", "echo hi"])
-    check o.sessions == @["daemon", "work", "sh", "-c", "echo hi"]
+    check o.sessions == @["daemon", "work", "--", "sh", "-c", "echo hi"]
     check not o.log and o.listen == ""
-    check parseCliArgs(@["--", "-l"]).sessions == @["-l"]
+    check parseCliArgs(@["--", "-l"]).sessions == @["--", "-l"]
     check parseCliArgs(@["daemon", "-"]).sessions == @["daemon", "-"]
+
+  test "daemon re-exec shape keeps flags before the sentinel":
+    # What `new` execs: flags are options until `--`, positionals after
+    let o = parseCliArgs(@["daemon", "mpx", "-l", "10.0.0.4:4534", "--", "/bin/bash"])
+    check o.sessions == @["daemon", "mpx", "--", "/bin/bash"]
+    check o.listen == "10.0.0.4:4534"
 
   test "missing value errors":
     expect(ValueError):
