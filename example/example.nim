@@ -619,24 +619,27 @@ when not defined(macosx):
 
 # 2) A client that dies while stopped hands fg to the next attach: stop,
 #    kill the stopped job from the shell, then a fresh attach resumes the
-#    program (attaching is fg)
-var solo = spawnPty("bash --norc")
-discard ptyExpect(solo, "$")
-ptySend(solo, bin & " attach zdemo\n")
-discard ptyExpect(solo, "tick")
-ptySend(solo, "\x1a")
-sleep(200)                          # the stop is a lone keypress; let it land
-discard ptyExpect(solo, "Stopped")
-doAssert hbStalled(500), "client stopped but program still ran"
-ptySend(solo, "kill -9 %1; echo KRC=$?\n")  # the terminal dies while stopped
-discard ptyExpect(solo, "KRC=0")     # bash's own report of the kill's fate
-doAssert hbStalled(700), "program ran without a client"
-discard runTimed("(sleep 1) | " & bin & " attach zdemo", 3)  # attach is fg
-doAssert not hbStalled(900), "fresh attach did not resume the stopped program"
-ptySend(solo, "exit\n")
-reap(solo.pid)
-discard close(solo.master)
-echo "example: Ctrl-Z stop, re-attach resume verified"
+#    program (attaching is fg). macOS: gated with test 1 above, same tty
+#    hold around a stopped-and-resumed job; the suspend/resume protocol
+#    itself stays covered by tests/test1.nim on every platform.
+when not defined(macosx):
+  var solo = spawnPty("bash --norc")
+  discard ptyExpect(solo, "$")
+  ptySend(solo, bin & " attach zdemo\n")
+  discard ptyExpect(solo, "tick")
+  ptySend(solo, "\x1a")
+  sleep(200)                          # the stop is a lone keypress; let it land
+  discard ptyExpect(solo, "Stopped")
+  doAssert hbStalled(500), "client stopped but program still ran"
+  ptySend(solo, "kill -9 %1; echo KRC=$?\n")  # the terminal dies while stopped
+  discard ptyExpect(solo, "KRC=0")     # bash's own report of the kill's fate
+  doAssert hbStalled(700), "program ran without a client"
+  discard runTimed("(sleep 1) | " & bin & " attach zdemo", 3)  # attach is fg
+  doAssert not hbStalled(900), "fresh attach did not resume the stopped program"
+  ptySend(solo, "exit\n")
+  reap(solo.pid)
+  discard close(solo.master)
+  echo "example: Ctrl-Z stop, re-attach resume verified"
 discard execCmd(bin & " kill zdemo 2>/dev/null")
 
 # 3) Ctrl-Z in a shell session still belongs to the session's own job
