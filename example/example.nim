@@ -577,17 +577,18 @@ proc hbStalled(ms: int): bool =
   sleep(ms)
   getFileSize(hbFile) == sz
 
-discard startProcess(bin, args=["daemon", "zdemo", "--", "/bin/sh", tickerSh],
-                     options={poDaemon})
-doAssert sockUp("zdemo"), "zdemo daemon never started"
-var tickerPid = 0
-for i in 1..20:
-  try:
-    tickerPid = parseInt(readFile(pidFile).strip)
-    break
-  except CatchableError:
-    sleep 100
-doAssert tickerPid > 0, "ticker never started"
+when not defined(macosx):
+  discard startProcess(bin, args=["daemon", "zdemo", "--", "/bin/sh", tickerSh],
+                       options={poDaemon})
+  doAssert sockUp("zdemo"), "zdemo daemon never started"
+  var tickerPid = 0
+  for i in 1..20:
+    try:
+      tickerPid = parseInt(readFile(pidFile).strip)
+      break
+    except CatchableError:
+      sleep 100
+  doAssert tickerPid > 0, "ticker never started"
 
 # 1) The containing shell: an interactive bash runs the attach, Ctrl-Z
 #    stops mpx, bash reports the stopped job and takes its prompt back,
@@ -673,30 +674,33 @@ when not defined(macosx):
   echo "example: Ctrl-Z passthrough in shell sessions verified"
 discard execCmd(bin & " kill shdemo 2>/dev/null")
 
-# 4) Resize: the client's SIGWINCH reaches the session's pty
-discard startProcess(bin, args=["daemon", "wsdemo"],
-                     env={"SHELL": "/bin/bash"}.newStringTable,
-                     options={poDaemon})
-doAssert sockUp("wsdemo"), "wsdemo daemon never started"
-var wsJob = spawnPty("bash --norc")
-discard ptyExpect(wsJob, "$")
-ptySend(wsJob, bin & " attach wsdemo\n")
-discard ptyExpect(wsJob, "$")        # the inner shell's own prompt
-ptySend(wsJob, "stty size\n")
-discard ptyExpect(wsJob, "24 80")
-var ws: HWinsize
-ws.ws_col = 100
-ws.ws_row = 30
-discard hIoctl(wsJob.master, HTIOCSWINSZ, addr ws)
-sleep(400)  # SIGWINCH -> client -> daemon -> session pty
-ptySend(wsJob, "stty size\n")
-discard ptyExpect(wsJob, "30 100")
-ptySend(wsJob, "\x07")
-sleep(300)
-ptySend(wsJob, "exit\n")
-reap(wsJob.pid)
-discard close(wsJob.master)
-echo "example: resize propagation verified"
+# 4) Resize: the client's SIGWINCH reaches the session's pty. macOS:
+# gated with the interactive-bash scenarios above; the same tty hold
+# wedges them.
+when not defined(macosx):
+  discard startProcess(bin, args=["daemon", "wsdemo"],
+                       env={"SHELL": "/bin/bash"}.newStringTable,
+                       options={poDaemon})
+  doAssert sockUp("wsdemo"), "wsdemo daemon never started"
+  var wsJob = spawnPty("bash --norc")
+  discard ptyExpect(wsJob, "$")
+  ptySend(wsJob, bin & " attach wsdemo\n")
+  discard ptyExpect(wsJob, "$")        # the inner shell's own prompt
+  ptySend(wsJob, "stty size\n")
+  discard ptyExpect(wsJob, "24 80")
+  var ws: HWinsize
+  ws.ws_col = 100
+  ws.ws_row = 30
+  discard hIoctl(wsJob.master, HTIOCSWINSZ, addr ws)
+  sleep(400)  # SIGWINCH -> client -> daemon -> session pty
+  ptySend(wsJob, "stty size\n")
+  discard ptyExpect(wsJob, "30 100")
+  ptySend(wsJob, "\x07")
+  sleep(300)
+  ptySend(wsJob, "exit\n")
+  reap(wsJob.pid)
+  discard close(wsJob.master)
+  echo "example: resize propagation verified"
 discard execCmd(bin & " kill wsdemo 2>/dev/null")
 discard execCmd(bin & " kill pastemo 2>/dev/null")
 
