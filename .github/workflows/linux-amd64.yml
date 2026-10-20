@@ -42,6 +42,7 @@ jobs:
 
       - name: Example
         run: nimble example
+        timeout-minutes: 8
 
       - name: Package
         run: |
