@@ -536,7 +536,7 @@ proc sockUp(name: string): bool =
 discard startProcess(bin, args=["daemon", "eodemo", "--", "/bin/cat"],
                      options={poDaemon})
 doAssert sockUp("eodemo"), "eodemo daemon never started"
-let (eo, _) = runTimed("(printf 'pre\\n\\x04after'; sleep 1) | " & bin & " attach eodemo", 4)
+let (eo, _) = runTimed("(printf 'pre\\n\\004after'; sleep 1) | " & bin & " attach eodemo", 4)
 doAssert "pre" in eo, "cat never echoed: " & eo
 var eoGone = false
 for i in 1..24:
@@ -552,11 +552,11 @@ echo "example: Ctrl-D passthrough ends the program verified"
 discard startProcess(bin, args=["daemon", "pastemo", "--", "/bin/cat"],
                      options={poDaemon})
 doAssert sockUp("pastemo"), "pastemo daemon never started"
-let (po, _) = runTimed("(printf 'ab\\x07cd\\n'; sleep 0.3; printf 'still\\n'; sleep 1) | " &
+let (po, _) = runTimed("(printf 'ab\\007cd\\n'; sleep 0.3; printf 'still\\n'; sleep 1) | " &
                        bin & " attach pastemo", 4)
 doAssert "still" in po, "BEL inside a paste chunk must not detach, got: " & po
 doAssert "ab" in po and "cd" in po, "the paste chunk never reached the program"
-discard runTimed("(printf '\\x07'; sleep 1) | " & bin & " attach pastemo", 4)
+discard runTimed("(printf '\\007'; sleep 1) | " & bin & " attach pastemo", 4)
 sleep(300)
 let (lsOut, _) = execCmdEx(bin & " ls")
 doAssert "pastemo" in lsOut, "lone Ctrl-G must detach without killing the session"
