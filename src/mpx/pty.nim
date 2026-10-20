@@ -38,20 +38,25 @@ when not defined(windows):
   proc ioctl(fd: cint, request: culong, arg: pointer): cint
     {.importc, header: "<sys/ioctl.h>".}
 
-  when defined(macosx) or defined(macos):
-    const TIOCSCTTY = 0x20007461'u32  # _IOW('t', 132) on BSD/macOS
-    const TIOCSPGRP = 0x80047476'u32  # _IOW('t', 118) on BSD/macOS
+  when defined(macosx) or defined(macos) or defined(freebsd) or defined(netbsd) or defined(openbsd) or defined(dragonfly):
+    const TIOCSCTTY = 0x20007461'u32  # BSD/macOS
+    const TIOCSPGRP = 0x80047476'u32  # _IOW('t', 118, int)
+    const TIOCSWINSZ = 0x80087467'u32 # _IOW('t', 103, struct winsize);
+                                      # the Linux value 0x5414 is another
+                                      # ioctl here, so resizes never landed
+    const TIOCGWINSZ = 0x40087468'u32 # _IOR('t', 104, struct winsize)
   else:
     const TIOCSCTTY = 0x540E'u32   # Linux
     const TIOCSPGRP = 0x5410'u32   # Linux
-  const
-    TIOCSWINSZ = 0x5414'u32
-    TIOCGWINSZ = 0x5413'u32
+    const TIOCSWINSZ = 0x5414'u32
+    const TIOCGWINSZ = 0x5413'u32
 
   type
     Pty* = object
       masterFd*: cint
       childPid*: Pid
+      progPid*: Pid   # the program's pid; its pgroup id too, so suspend
+                      # and resume can signal the whole job
 
   proc openPty*(cmd: string, args: openArray[string] = [], width: uint16 = 80, height: uint16 = 24): Pty =
     let exe = if cmd.len == 0: defaultShell() else: cmd
@@ -65,6 +70,16 @@ when not defined(windows):
     if openpty(addr master, addr slave, nil, nil, addr win) != 0:
       raise newException(OSError, "openpty failed")
 
+    # The keeper reports the program's pid to the parent through this
+    # pipe: the parent (the daemon) must be able to signal the program's
+    # group for suspend/resume, and the only process that knows the pid
+    # is the one that forked it.
+    var pidPipe: array[2, cint]
+    if pipe(pidPipe) != 0:
+      discard close(master)
+      discard close(slave)
+      raise newException(OSError, "pipe failed")
+
     let pid = fork()
     if pid == 0:
       # Child: session leader on the slave, then fork the program into a
@@ -77,8 +92,10 @@ when not defined(windows):
       discard setsid()
       discard ioctl(slave, TIOCSCTTY, nil)
       discard close(master)
+      discard close(pidPipe[0])
       let prog = fork()
       if prog == 0:
+        discard close(pidPipe[1])
         discard setpgid(0, 0)
         discard dup2(slave, 0)
         discard dup2(slave, 1)
@@ -93,6 +110,10 @@ when not defined(windows):
       discard setpgid(prog, prog)  # both sides race to set it; either wins
       var pgrp: cint = prog
       discard ioctl(slave, TIOCSPGRP, addr pgrp)
+      # Hand the program's pid up before waiting: a fork failure writes
+      # -1, so the parent never blocks on a keeper that died early.
+      discard posix.write(pidPipe[1], addr prog, sizeof(prog))
+      discard close(pidPipe[1])
       while true:
         var status: cint
         if waitpid(prog, status, WUNTRACED) != prog:
@@ -101,22 +122,41 @@ when not defined(windows):
           break
         if WIFSTOPPED(status):
           # Say so on the slave: it rides the master stream to clients,
-          # no new plumbing. A stop with no shell in the session to drop
-          # to looks like a dead pane otherwise.
-          let note = "\r\n\x1b[?25h[mpx] program stopped (Ctrl-Z): no shell " &
-            "in this session to drop to. Detach with Ctrl-G, resume with " &
-            "kill -CONT " & $prog & "\r\n"
+          # no new plumbing. The stopped client (or a dead one) leaves a
+          # frozen screen otherwise, with no hint why.
+          let note = "\r\n\x1b[?25h[mpx] program stopped (Ctrl-Z); " &
+            "fg or re-attach to resume\r\n"
           discard posix.write(slave, note.cstring, cint(note.len))
       discard close(slave)
       quit(0)
     elif pid < 0:
       discard close(master)
       discard close(slave)
+      discard close(pidPipe[0])
+      discard close(pidPipe[1])
       raise newException(OSError, "fork failed")
 
+    discard close(pidPipe[1])
     discard close(slave)
+    if posix.read(pidPipe[0], addr result.progPid,
+                  sizeof(result.progPid)) != sizeof(result.progPid):
+      result.progPid = 0.Pid
+    discard close(pidPipe[0])
     result.masterFd = master
     result.childPid = pid
+
+  proc suspend*(pty: Pty) =
+    ## SIGTSTP to the program's group: the signal a tty sends for Ctrl-Z
+    ## when ISIG is on. A raw-mode program has ISIG off and never sees the
+    ## byte as a signal, so mpx sends it itself. Catchable on purpose: a
+    ## program that tidies its screen before stopping still gets the
+    ## chance, exactly as under a plain terminal.
+    if pty.progPid > 0:
+      discard kill(-pty.progPid, SIGTSTP)
+
+  proc resume*(pty: Pty) =
+    if pty.progPid > 0:
+      discard kill(-pty.progPid, SIGCONT)
 
   proc setSize*(pty: Pty, width, height: uint16) =
     var win: Winsize
@@ -134,6 +174,10 @@ when not defined(windows):
 
   proc close*(pty: Pty) =
     discard posix.close(pty.masterFd)
+    # A program stopped by Ctrl-Z must not linger as a wedged orphan:
+    # CONT wakes it to see the closed master and exit.
+    if pty.progPid > 0:
+      discard kill(-pty.progPid, SIGCONT)
     var status: cint
     discard waitpid(pty.childPid, status, WNOHANG)
 

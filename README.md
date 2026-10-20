@@ -63,10 +63,13 @@ mpx ls
 # Ctrl-D is NOT a detach key: it is EOF, and it reaches the program so
 # shells, REPLs and pagers behave normally.
 #
-# Ctrl-Z reaches the program too. In a shell session the job suspends
-# and the prompt returns, as in any terminal. A session running a
-# command directly (`mpx 3code`) has no shell to drop to: the program
-# stops, mpx says so on screen, and `kill -CONT <pid>` resumes it.
+# Ctrl-Z works like any terminal. In a shell session the byte reaches
+# the program: the job suspends and that shell's prompt returns. A
+# session running a command directly (`mpx 3code`) has no shell to drop
+# to, so mpx stands in for the terminal driver: the program gets
+# SIGTSTP, mpx stops with it, and the shell that launched mpx has its
+# prompt back. fg resumes both, and a fresh attach resumes a session
+# left stopped behind a dead client.
 
 # Kill a session
 mpx kill main

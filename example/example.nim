@@ -2,7 +2,7 @@
 #
 # Run with: nimble example
 
-import std/[os, osproc, strutils, posix, strtabs, streams]
+import std/[os, osproc, strutils, posix, strtabs, streams, times]
 
 putEnv("XDG_RUNTIME_DIR", "/tmp")
 
@@ -19,6 +19,9 @@ proc cleanup() =
   discard execCmd("pkill -f 'mpx daemon " & Session & "' 2>/dev/null")
   discard execCmd("pkill -f 'mpx daemon bashdemo' 2>/dev/null")
   discard execCmd("pkill -f 'mpx daemon startnc' 2>/dev/null")
+  for s in ["zdemo", "shdemo", "wsdemo", "eodemo", "pastemo"]:
+    discard execCmd("pkill -f 'mpx daemon " & s & "' 2>/dev/null")
+    removeFile(RuntimeDir / "mpx" / s & ".sock")
   removeFile(RuntimeDir / "mpx" / Session & ".sock")
   removeFile(RuntimeDir / "mpx" / "bashdemo.sock")
   removeFile(RuntimeDir / "mpx" / "startnc.sock")
@@ -201,8 +204,11 @@ createDir(failRt)
 let (failOut, failRc) = runTimed("env XDG_RUNTIME_DIR=" & failRt & " " & bin &
                                   " new faildemo /nonexistent 2>&1", 12)
 doAssert failRc != 0, "new with a dead-on-arrival command should fail"
-doAssert "daemon failed to start" in failOut,
-         "expected a daemon-start failure, got: " & failOut
+# Either clean failure is right, and which one lands is a race: the
+# daemon may die before the client's readiness poll (startup failure)
+# or a beat later, mid-attach (session ended).
+doAssert "daemon failed to start" in failOut or "session ended" in failOut,
+         "expected a clean failure, got: " & failOut
 for ext in [".sock", ".lock", ".pid"]:
   doAssert not sockExists(failRt / "mpx" / ("faildemo" & ext)),
           "failed start left " & ext & " behind"
@@ -417,6 +423,276 @@ discard execCmd("pkill -f 'mpx daemon tcpdemo' 2>/dev/null")
 removeDir(daemonRt)
 removeDir(clientRt)
 removeDir(dataDir)
+
+# ----------------------------------------------------------------------
+# Key handling: every mpx shortcut, verified on a real tty. Keys only
+# mean what they mean on a terminal, so the client under test runs under
+# an interactive bash on a pty of its own: controlling tty, own session,
+# a real shell's job control -- the containing shell mpx must return to.
+
+type
+  HWinsize {.importc: "struct winsize", header: "<sys/ioctl.h>", final, pure.} = object
+    ws_row, ws_col: uint16
+
+when defined(macosx) or defined(freebsd) or defined(netbsd) or defined(openbsd) or defined(dragonfly):
+  proc hOpenpty(amaster, aslave: ptr cint, name: cstring, termp: pointer,
+                winp: ptr HWinsize): cint {.importc: "openpty", header: "<util.h>".}
+  const
+    HTIOCSCTTY = 0x20007461'u32
+    HTIOCSPGRP = 0x80047476'u32
+    HTIOCSWINSZ = 0x80087467'u32  # _IOW('t', 103, struct winsize)
+else:
+  proc hOpenpty(amaster, aslave: ptr cint, name: cstring, termp: pointer,
+                winp: ptr HWinsize): cint {.importc: "openpty", header: "<pty.h>".}
+  const
+    HTIOCSCTTY = 0x540E'u32
+    HTIOCSPGRP = 0x5410'u32
+    HTIOCSWINSZ = 0x5414'u32
+
+proc hIoctl(fd: cint, request: culong, arg: pointer): cint
+  {.importc: "ioctl", header: "<sys/ioctl.h>".}
+
+type PtyJob = object
+  pid: Pid
+  master: cint
+
+proc spawnPty(cmd: string): PtyJob =
+  var master, slave: cint
+  doAssert hOpenpty(addr master, addr slave, nil, nil, nil) == 0, "openpty failed"
+  var ws: HWinsize
+  ws.ws_col = 80
+  ws.ws_row = 24
+  discard hIoctl(master, HTIOCSWINSZ, addr ws)
+  let pid = fork()
+  if pid == 0:
+    discard setsid()
+    discard hIoctl(slave, HTIOCSCTTY, nil)
+    var pg: cint = getpgrp()
+    discard hIoctl(slave, HTIOCSPGRP, addr pg)
+    discard dup2(slave, 0)
+    discard dup2(slave, 1)
+    discard dup2(slave, 2)
+    if master > 2:
+      discard close(master)
+    if slave > 2:
+      discard close(slave)
+    discard execvp("/bin/sh", allocCStringArray(["sh", "-c", cmd]))
+    quit(1)
+  discard close(slave)
+  discard fcntl(master, F_SETFL, fcntl(master, F_GETFL) or O_NONBLOCK)
+  PtyJob(pid: pid, master: master)
+
+proc ptySend(j: PtyJob, s: string) =
+  discard posix.write(j.master, unsafeAddr s[0], s.len)
+
+proc ptyReadFor(j: PtyJob, ms: int, needle: string): string =
+  let deadline = getTime() + initDuration(milliseconds = ms)
+  var buf: array[4096, char]
+  while getTime() < deadline:
+    let n = posix.read(j.master, addr buf[0], buf.len)
+    if n > 0:
+      result.add cast[string](buf[0..<n])
+      if needle.len > 0 and needle in result:
+        return
+    else:
+      sleep 15
+
+proc count(haystack, needle: string): int =
+  var i = 0
+  while true:
+    let at = haystack.find(needle, i)
+    if at < 0:
+      return
+    inc result
+    i = at + needle.len
+
+proc ptyExpect(j: PtyJob, needle: string, ms = 3000, times = 1): string =
+  ## Wait for needle to appear `times` times. A typed command's line echo
+  ## is its first appearance; its output is the second -- requiring two
+  ## tells them apart on a tty that echoes input.
+  result = j.ptyReadFor(ms, needle)
+  doAssert count(result, needle) >= times,
+    "expected " & $times & "x " & needle & ", got: " & result
+
+proc reap(pid: Pid, ms = 3000) =
+  let deadline = getTime() + initDuration(milliseconds = ms)
+  var st: cint
+  while getTime() < deadline:
+    if waitpid(pid, st, WNOHANG) == pid:
+      return
+    sleep 25
+  discard kill(pid, SIGKILL)
+  discard waitpid(pid, st, 0)
+
+proc sockUp(name: string): bool =
+  for i in 1..40:
+    if sockExists(RuntimeDir / "mpx" / name & ".sock"):
+      return true
+    sleep(250)
+  false
+
+# Ctrl-D is EOF for the program, not for the attach: cat reads it through
+# mpx and the session ends by itself
+discard startProcess(bin, args=["daemon", "eodemo", "--", "/bin/cat"],
+                     options={poDaemon})
+doAssert sockUp("eodemo"), "eodemo daemon never started"
+let (eo, _) = runTimed("(printf 'pre\\n\\x04after'; sleep 1) | " & bin & " attach eodemo", 4)
+doAssert "pre" in eo, "cat never echoed: " & eo
+var eoGone = false
+for i in 1..24:
+  if not sockExists(RuntimeDir / "mpx" / "eodemo.sock"):
+    eoGone = true
+    break
+  sleep(250)
+doAssert eoGone, "Ctrl-D never ended the cat session"
+echo "example: Ctrl-D passthrough ends the program verified"
+
+# A BEL inside a pasted chunk rides through; only a lone Ctrl-G detaches,
+# and detaching leaves the session alive
+discard startProcess(bin, args=["daemon", "pastemo", "--", "/bin/cat"],
+                     options={poDaemon})
+doAssert sockUp("pastemo"), "pastemo daemon never started"
+let (po, _) = runTimed("(printf 'ab\\x07cd\\n'; sleep 0.3; printf 'still\\n'; sleep 1) | " &
+                       bin & " attach pastemo", 4)
+doAssert "still" in po, "BEL inside a paste chunk must not detach, got: " & po
+doAssert "ab" in po and "cd" in po, "the paste chunk never reached the program"
+discard runTimed("(printf '\\x07'; sleep 1) | " & bin & " attach pastemo", 4)
+sleep(300)
+let (lsOut, _) = execCmdEx(bin & " ls")
+doAssert "pastemo" in lsOut, "lone Ctrl-G must detach without killing the session"
+echo "example: Ctrl-G detach (and BEL-in-paste passthrough) verified"
+
+# Ctrl-Z in a command session: the ticker's heartbeat file is the honest
+# witness of the program's own state, portable where /proc is not
+let hbFile = getTempDir() / "mpx_example_tick.hb"
+let pidFile = getTempDir() / "mpx_example_tick.pid"
+removeFile(hbFile)
+removeFile(pidFile)
+let tickerSh = getTempDir() / "mpx_example_ticker.sh"
+writeFile(tickerSh,
+  "echo $$ > " & pidFile & "\n" &
+  "while true; do printf x >> " & hbFile & "; echo tick; sleep 0.2; done\n")
+proc hbStalled(ms: int): bool =
+  let sz = getFileSize(hbFile)
+  sleep(ms)
+  getFileSize(hbFile) == sz
+
+discard startProcess(bin, args=["daemon", "zdemo", "--", "/bin/sh", tickerSh],
+                     options={poDaemon})
+doAssert sockUp("zdemo"), "zdemo daemon never started"
+var tickerPid = 0
+for i in 1..20:
+  try:
+    tickerPid = parseInt(readFile(pidFile).strip)
+    break
+  except CatchableError:
+    sleep 100
+doAssert tickerPid > 0, "ticker never started"
+
+# 1) The containing shell: an interactive bash runs the attach, Ctrl-Z
+#    stops mpx, bash reports the stopped job and takes its prompt back,
+#    fg resumes both
+var term = spawnPty("bash --norc")
+discard ptyExpect(term, "$")
+ptySend(term, bin & " attach zdemo\n")
+discard ptyExpect(term, "tick")
+ptySend(term, "\x1a")
+discard ptyExpect(term, "Stopped")  # bash's job report: the shell is back
+sleep(200)                          # any heartbeat write in flight lands
+doAssert hbStalled(700), "program kept running after Ctrl-Z"
+ptySend(term, "fg\n")
+doAssert not hbStalled(700), "fg did not resume the program"
+discard ptyExpect(term, "tick")     # output flows again through the same attach
+ptySend(term, "\x07")               # and Ctrl-G still detaches afterwards
+sleep(300)                          # let the detach land before the next key
+ptySend(term, "echo BACK_AT_SHELL\n")
+discard ptyExpect(term, "BACK_AT_SHELL", times = 2)  # ran, not just echoed
+ptySend(term, "exit\n")
+reap(term.pid)
+discard close(term.master)
+echo "example: Ctrl-Z returns to the containing shell, fg resumes verified"
+
+# 2) A client that dies while stopped hands fg to the next attach: stop,
+#    kill the stopped job from the shell, then a fresh attach resumes the
+#    program (attaching is fg)
+var solo = spawnPty("bash --norc")
+discard ptyExpect(solo, "$")
+ptySend(solo, bin & " attach zdemo\n")
+discard ptyExpect(solo, "tick")
+ptySend(solo, "\x1a")
+sleep(200)                          # the stop is a lone keypress; let it land
+discard ptyExpect(solo, "Stopped")
+doAssert hbStalled(500), "client stopped but program still ran"
+ptySend(solo, "kill -9 %1; echo KRC=$?\n")  # the terminal dies while stopped
+discard ptyExpect(solo, "KRC=0")     # bash's own report of the kill's fate
+doAssert hbStalled(700), "program ran without a client"
+discard runTimed("(sleep 1) | " & bin & " attach zdemo", 3)  # attach is fg
+doAssert not hbStalled(900), "fresh attach did not resume the stopped program"
+ptySend(solo, "exit\n")
+reap(solo.pid)
+discard close(solo.master)
+echo "example: Ctrl-Z stop, re-attach resume verified"
+discard execCmd(bin & " kill zdemo 2>/dev/null")
+
+# 3) Ctrl-Z in a shell session still belongs to the session's own job
+#    control: the byte is forwarded, the inner bash stops ITS job, the
+#    attach client itself must keep running
+discard startProcess(bin, args=["daemon", "shdemo"],
+                     env={"SHELL": "/bin/bash"}.newStringTable,
+                     options={poDaemon})
+doAssert sockUp("shdemo"), "shdemo daemon never started"
+var shellJob = spawnPty("bash --norc")
+discard ptyExpect(shellJob, "$")
+ptySend(shellJob, bin & " attach shdemo\n")
+discard ptyExpect(shellJob, "$")     # the inner shell's own prompt
+ptySend(shellJob, "sleep 5\n")
+sleep(400)
+ptySend(shellJob, "\x1a")
+sleep(200)                          # the byte is a lone keypress for the client
+discard ptyExpect(shellJob, "Stopped")  # inner bash's job report
+# the client never stopped: the inner shell still answers through it
+ptySend(shellJob, "echo INNER_ALIVE\n")
+discard ptyExpect(shellJob, "INNER_ALIVE", times = 2)
+ptySend(shellJob, "\x07")            # detach from the shell session
+sleep(300)
+ptySend(shellJob, "echo G_DONE\n")
+discard ptyExpect(shellJob, "G_DONE", times = 2)
+ptySend(shellJob, "exit\n")
+reap(shellJob.pid)
+discard close(shellJob.master)
+echo "example: Ctrl-Z passthrough in shell sessions verified"
+discard execCmd(bin & " kill shdemo 2>/dev/null")
+
+# 4) Resize: the client's SIGWINCH reaches the session's pty
+discard startProcess(bin, args=["daemon", "wsdemo"],
+                     env={"SHELL": "/bin/bash"}.newStringTable,
+                     options={poDaemon})
+doAssert sockUp("wsdemo"), "wsdemo daemon never started"
+var wsJob = spawnPty("bash --norc")
+discard ptyExpect(wsJob, "$")
+ptySend(wsJob, bin & " attach wsdemo\n")
+discard ptyExpect(wsJob, "$")        # the inner shell's own prompt
+ptySend(wsJob, "stty size\n")
+discard ptyExpect(wsJob, "24 80")
+var ws: HWinsize
+ws.ws_col = 100
+ws.ws_row = 30
+discard hIoctl(wsJob.master, HTIOCSWINSZ, addr ws)
+sleep(400)  # SIGWINCH -> client -> daemon -> session pty
+ptySend(wsJob, "stty size\n")
+discard ptyExpect(wsJob, "30 100")
+ptySend(wsJob, "\x07")
+sleep(300)
+ptySend(wsJob, "exit\n")
+reap(wsJob.pid)
+discard close(wsJob.master)
+echo "example: resize propagation verified"
+discard execCmd(bin & " kill wsdemo 2>/dev/null")
+discard execCmd(bin & " kill pastemo 2>/dev/null")
+
+removeFile(tickerSh)
+removeFile(hbFile)
+removeFile(pidFile)
 
 cleanup()
 echo "example: all passed"

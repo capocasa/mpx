@@ -19,6 +19,9 @@ type
                       # Lets a probe tell whether the listener it reached
                       # is the session its .port file named, or a younger
                       # daemon that claimed the port in the base-port scan.
+    mkSuspend = 8'u8  # client -> daemon: stop the program (Ctrl-Z in a
+                      # command session; no inner shell to take the stop)
+    mkResume = 9'u8   # client -> daemon: continue the program (fg)
 
 const
   # v2: the payload length is a 32-bit big-endian field. v1's single length
@@ -119,6 +122,16 @@ when defined(windows):
     var v: DWORD = ms.DWORD
     discard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, addr v,
                        sizeof(v).SockLen)
+
+else:
+  proc setRecvTimeoutMs*(fd: SocketHandle, ms: int) =
+    ## Same cap on posix: ms of 0 clears it (blocking again). Used for
+    ## one-shot handshakes on an otherwise blocking socket.
+    var tv: Timeval
+    tv.tv_sec = Time(ms div 1000)
+    tv.tv_usec = Suseconds((ms mod 1000) * 1000)
+    discard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, addr tv,
+                       sizeof(tv).SockLen)
 
 proc setNonBlocking*(fd: SocketHandle) =
   when defined(windows):

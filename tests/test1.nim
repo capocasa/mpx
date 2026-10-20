@@ -1,4 +1,4 @@
-import std/[unittest, os, osproc, strutils]
+import std/[unittest, os, osproc, strutils, times]
 import std/posix except SocketHandle
 import mpx/[protocol, pty, session, log, config, cli, runtime]
 import ttty/[terminal, grid]
@@ -223,9 +223,20 @@ test "isActive false for missing socket":
   putEnv("XDG_RUNTIME_DIR", getTempDir())
   check not isActive("definitely_not_a_session_xyz")
 
+test "suspend and resume frames round-trip":
+  var buf: seq[byte]
+  buf.add frameBytes(mkSuspend, [])
+  buf.add frameBytes(mkResume, [])
+  var kind: MsgKind
+  var payload: seq[byte]
+  check takeFrame(buf, kind, payload) and kind == mkSuspend and payload.len == 0
+  check takeFrame(buf, kind, payload) and kind == mkResume and payload.len == 0
+  check not takeFrame(buf, kind, payload)
+
 # PTY tests
 test "pty roundtrip":
   let p = openPty("/bin/cat", [], 80, 24)
+  check p.progPid > 0  # known to the daemon, so suspend can signal the group
   let msg = "hello\n"
   discard p.write(msg.cstring, msg.len)
   sleep(50)
@@ -235,6 +246,35 @@ test "pty roundtrip":
   let got = cast[string](buf[0..<n])
   check "hello" in got
   p.close()
+
+when not defined(windows):
+  test "pty suspend stops the program's group, resume thaws it":
+    # Ctrl-Z in a command session is SIGTSTP to the program's group: the
+    # whole job freezes (sh and its sleep child), output goes silent, and
+    # SIGCONT starts it again.
+    let script = "while true; do echo tick; sleep 0.1; done"
+    let p = openPty("/bin/sh", ["-c", script], 80, 24)
+    let fl = fcntl(p.masterFd, F_GETFL)
+    discard fcntl(p.masterFd, F_SETFL, fl or O_NONBLOCK)
+
+    proc drain(ms: int): string =
+      let deadline = getTime() + initDuration(milliseconds = ms)
+      var buf: array[4096, char]
+      while getTime() < deadline:
+        let n = posix.read(p.masterFd, addr buf[0], buf.len)
+        if n > 0:
+          result.add cast[string](buf[0..<n])
+        else:
+          sleep 20
+
+    check "tick" in drain(700)
+    p.suspend()
+    discard drain(300)  # a tick already in flight may land; let it
+    check "tick" notin drain(400)
+    p.resume()
+    check "tick" in drain(700)
+    discard kill(-p.progPid, SIGKILL)
+    p.close()
 
 # Snapshot tests (now in ttty)
 test "renderAnsi empty":

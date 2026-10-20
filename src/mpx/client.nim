@@ -10,6 +10,8 @@ else:
 
 const CtrlG = 0x07.byte  # detach key: BEL, layout-independent, unbound
                           # in practice (readline abort, dvtm mod)
+const CtrlZ = 0x1a.byte  # suspend key: the tty's SUSP byte, handled here in
+                          # command sessions where no inner shell can take it
 
 when not defined(windows):
 
@@ -37,9 +39,33 @@ when not defined(windows):
 
   proc runClient*(sessionName: string, cfg: Config) =
     discard signal(SIGPIPE, SIG_IGN)  # a closed peer is an error, not death
+    var directSession = false  # the session runs a bare command: Ctrl-Z is
+                               # ours, not the program's
     let fd =
       try:
-        connectUnix(socketPath(sessionName))
+        let ufd = connectUnix(socketPath(sessionName))
+        # Unix clients are trusted on arrival, but they still introduce
+        # themselves: the reply's payload says whether the session runs a
+        # bare command, which decides who owns Ctrl-Z. A daemon from
+        # before suspend support never answers mkAttach; the timeout
+        # falls back to plain byte forwarding, the only thing it knows.
+        discard sendMsg(ufd, mkAttach,
+          sessionName.toOpenArrayByte(0, sessionName.len-1))
+        setRecvTimeoutMs(ufd, 1000)
+        var refused = false
+        try:
+          let (kind, payload) = recvMsg(ufd)
+          if kind == mkAttached:
+            directSession = payload.len > 0 and payload[0] == 1
+          else:
+            refused = true
+        except IOError:
+          discard  # legacy daemon: no handshake, no suspend support
+        setRecvTimeoutMs(ufd, 0)
+        if refused:
+          discard posix.close(ufd)
+          raise newException(IOError, "attach refused: " & sessionName)
+        ufd
       except OSError:
         # No local socket. If TCP is configured, scan for the session there
         # (wireguard, port forward, or same host over 127.0.0.1).
@@ -51,9 +77,11 @@ when not defined(windows):
           try:
             let candidate = connectTcp(ip, p)
             discard sendMsg(candidate, mkAttach, sessionName.toOpenArrayByte(0, sessionName.len-1))
+            setRecvTimeoutMs(candidate, 1000)
             let (kind, payload) = recvMsg(candidate)
             if kind == mkAttached:
               found = candidate
+              directSession = payload.len > 0 and payload[0] == 1
               break
             # Wrong session or error: keep scanning
             discard posix.close(candidate)
@@ -72,21 +100,12 @@ when not defined(windows):
     rawTermios.c_oflag = rawTermios.c_oflag and not OPOST
     rawTermios.c_cc[VMIN] = 1.char
     rawTermios.c_cc[VTIME] = 0.char
-    discard tcsetattr(0, TCSADRAIN, addr rawTermios)
 
-    # Our terminal size is the session's size: claim it, and follow the
-    # local window with SIGWINCH for the life of the attach (the desk
-    # window resizing re-sizes the shared pty; a smaller co-attached
-    # viewer -- the phone -- deliberately does not).
-    var win: Winsize
-    discard ioctl(1, TIOCGWINSZ, addr win)
-    var w = win.ws_col
-    var h = win.ws_row
-    if w == 0 or h == 0:
-      w = 80
-      h = 24
-    discard sendMsg(fd, mkResize, [byte(w shr 8), byte(w and 0xff), byte(h shr 8), byte(h and 0xff)])
-
+    # Winch pipe and handler before raw mode: nothing between the raw
+    # tcsetattr and the try below may raise (pipe failure, resize send)
+    # or that raise escapes without the restore the finally owns, and the
+    # tty stays raw. Registered this early, both are torn down by the
+    # finally on every exit path.
     if pipe(winchPipe) != 0:
       raise newException(OSError, "pipe failed")
     # Both ends non-blocking: the handler must never block on a full pipe,
@@ -108,70 +127,117 @@ when not defined(windows):
     except IOSelectorsException:
       discard
 
-    var running = true
-    while running:
-      let events = sel.select(if stdinRegistered: -1 else: 100)
-      for ev in events:
-        if ev.fd == 0:
-          # stdin -> daemon, through the detach keys
-          var buf: array[4096, byte]
-          let n = posix.read(0, addr buf[0], buf.len)
-          if n > 0:
-            # Ctrl-G (BEL) detaches; everything else reaches the program,
-            # including Ctrl-D so shells and REPLs see EOF. Detach only on
-            # a lone keypress: a BEL inside pasted text must not kick the
-            # client out of the session. One key, no prefix state, present
-            # on every keyboard layout; readline binds it to an abort
-            # nobody presses on purpose (dvtm uses it as its mod key).
-            if n == 1 and buf[0] == CtrlG:
-              discard sendMsg(fd, mkDetach)
-              running = false
-            else:
-              discard sendMsg(fd, mkInput, buf[0..<n])
-          else:
-            running = false
-        elif ev.fd == winchPipe[0]:
-          # SIGWINCH arrived: drain the poke and send the resize from here
-          var poke: array[64, byte]
-          while posix.read(winchPipe[0], addr poke[0], poke.len) > 0:
-            discard
-          sendResize(fd)
-        elif ev.fd == fd.cint:
-          # daemon -> stdout
-          try:
-            let (kind, payload) = recvMsg(fd)
-            case kind
-            of mkOutput:
-              discard posix.write(1, unsafeAddr payload[0], payload.len)
-            of mkResize:
-              # Another client resized; we just ignore
-              discard
-            else:
-              discard
-          except IOError:
-            running = false
-      # If stdin not registered, poll it manually with non-blocking read
-      if not stdinRegistered:
-        var buf: array[4096, byte]
-        let fl = fcntl(0, F_GETFL)
-        discard fcntl(0, F_SETFL, fl or O_NONBLOCK)
-        let n = posix.read(0, addr buf[0], buf.len)
-        discard fcntl(0, F_SETFL, fl)
-        if n > 0:
-          discard sendMsg(fd, mkInput, buf[0..<n])
-        elif n == 0:
-          # EOF: unselectable stdin still ends the session when it closes.
-          # An empty nonblocking read reports -1 EAGAIN, never 0.
-          running = false
+    # A scripted client (stdin a pipe) never self-suspends: stopping mid-
+    # script hangs the script. Its Ctrl-Z bytes ride to the program.
+    let ttyIn = isatty(0.cint) == 1
 
-    # Restore terminal
-    discard signal(SIGWINCH, oldWinch)
-    if winchPipe[0] != -1:
-      discard posix.close(winchPipe[0])
-      discard posix.close(winchPipe[1])
-      winchPipe = [cint(-1), cint(-1)]
-    discard tcsetattr(0, TCSADRAIN, addr oldTermios)
-    discard posix.close(fd)
+    discard tcsetattr(0, TCSADRAIN, addr rawTermios)
+    try:
+      # Our terminal size is the session's size: claim it, and follow the
+      # local window with SIGWINCH for the life of the attach (the desk
+      # window resizing re-sizes the shared pty; a smaller co-attached
+      # viewer -- the phone -- deliberately does not).
+      var win: Winsize
+      discard ioctl(1, TIOCGWINSZ, addr win)
+      var w = win.ws_col
+      var h = win.ws_row
+      if w == 0 or h == 0:
+        w = 80
+        h = 24
+      discard sendMsg(fd, mkResize, [byte(w shr 8), byte(w and 0xff), byte(h shr 8), byte(h and 0xff)])
+
+      var running = true
+      var detached = false   # Ctrl-G: the one exit that is not news
+      var stdinEof = false   # scripted attach: input done, not an error
+      while running:
+        let events = sel.select(if stdinRegistered: -1 else: 100)
+        for ev in events:
+          if ev.fd == 0:
+            # stdin -> daemon, through the detach keys
+            var buf: array[4096, byte]
+            let n = posix.read(0, addr buf[0], buf.len)
+            if n > 0:
+              # Ctrl-G (BEL) detaches; everything else reaches the program,
+              # including Ctrl-D so shells and REPLs see EOF. Both act only
+              # on a lone keypress: the same byte inside pasted text must
+              # ride through, not kick the client out of the session or stop
+              # it. One key, no prefix state, present on every keyboard
+              # layout; readline binds Ctrl-G to an abort nobody presses on
+              # purpose (dvtm uses it as its mod key).
+              if n == 1 and buf[0] == CtrlG:
+                discard sendMsg(fd, mkDetach)
+                detached = true
+                running = false
+              elif n == 1 and buf[0] == CtrlZ and directSession and ttyIn:
+                # Ctrl-Z in a command session: no shell inside the session
+                # can take the stop, so this client does what the terminal
+                # driver does for a foreground job -- stop the program, stop
+                # itself. The shell that launched mpx wakes on our stop with
+                # its prompt back, as in any terminal, and its fg resumes
+                # both: back to raw mode here, SIGCONT for the program.
+                discard sendMsg(fd, mkSuspend)
+                discard tcsetattr(0, TCSADRAIN, addr oldTermios)
+                let oldTstp = signal(SIGTSTP, SIG_DFL)
+                discard kill(getpid(), SIGTSTP)
+                discard signal(SIGTSTP, oldTstp)
+                discard tcsetattr(0, TCSADRAIN, addr rawTermios)
+                discard sendMsg(fd, mkResume)
+              else:
+                discard sendMsg(fd, mkInput, buf[0..<n])
+            else:
+              stdinEof = true
+              running = false
+          elif ev.fd == winchPipe[0]:
+            # SIGWINCH arrived: drain the poke and send the resize from here
+            var poke: array[64, byte]
+            while posix.read(winchPipe[0], addr poke[0], poke.len) > 0:
+              discard
+            sendResize(fd)
+          elif ev.fd == fd.cint:
+            # daemon -> stdout
+            try:
+              let (kind, payload) = recvMsg(fd)
+              case kind
+              of mkOutput:
+                discard posix.write(1, unsafeAddr payload[0], payload.len)
+              of mkResize:
+                # Another client resized; we just ignore
+                discard
+              else:
+                discard
+            except IOError:
+              running = false
+        # If stdin not registered, poll it manually with non-blocking read
+        if not stdinRegistered:
+          var buf: array[4096, byte]
+          let fl = fcntl(0, F_GETFL)
+          discard fcntl(0, F_SETFL, fl or O_NONBLOCK)
+          let n = posix.read(0, addr buf[0], buf.len)
+          discard fcntl(0, F_SETFL, fl)
+          if n > 0:
+            discard sendMsg(fd, mkInput, buf[0..<n])
+          elif n == 0:
+            # EOF: unselectable stdin still ends the session when it closes.
+            # An empty nonblocking read reports -1 EAGAIN, never 0.
+            stdinEof = true
+            running = false
+
+      # A session that vanished under us (daemon exit, mpx kill) is an
+      # error, not a silent success: the user asked for a session, and it
+      # is gone. Detach and stdin EOF are the only quiet exits.
+      if not detached and not stdinEof:
+        raise newException(OSError, "session ended: " & sessionName)
+    finally:
+      # Every exit path -- detach, stdin EOF, and the raise above alike --
+      # hands the tty back cooked. The raise used to skip this block,
+      # leaving the terminal in raw mode (no echo) until `reset`.
+      discard signal(SIGWINCH, oldWinch)
+      if winchPipe[0] != -1:
+        discard posix.close(winchPipe[0])
+        discard posix.close(winchPipe[1])
+        winchPipe = [cint(-1), cint(-1)]
+      discard tcsetattr(0, TCSADRAIN, addr oldTermios)
+      discard posix.close(fd)
 
 else:
 
@@ -335,6 +401,8 @@ else:
       raise newException(OSError, "CreateThread failed: " & $getLastError())
 
     var running = true
+    var detached = false   # Ctrl-G: the one exit that is not news
+    var stdinEof = false   # scripted attach: input done, not an error
     var inbuf: seq[byte]  # partial frame(s) read off the nonblocking socket
 
     proc handleSocket(fd: SocketHandle, hOut: Handle) =
@@ -396,6 +464,7 @@ else:
           # not kick the client out of the session.
           if n == 1 and stdinWatch.bufs[slot][0] == CtrlG:
             discard sendMsg(fd, mkDetach)
+            detached = true
             running = false
           else:
             discard sendMsg(fd, mkInput,
@@ -404,6 +473,7 @@ else:
           stdinWatch.lens[slot] = 0
           stdinWatch.spin.release()
         if stdinWatch.eof.load(moRelaxed):
+          stdinEof = true
           running = false
       elif idx == 1:
         # The poller saw the console move: claim the new size for the
@@ -418,6 +488,12 @@ else:
         discard WSAEnumNetworkEvents(fd, sockEv, addr ne)
         if (ne.lNetworkEvents and (FD_READ or FD_CLOSE)) != 0:
           handleSocket(fd, hOut)
+
+    # A session that vanished under us (daemon exit, mpx kill) is an
+    # error, not a silent success. Detach and stdin EOF are the only
+    # quiet exits.
+    if not detached and not stdinEof:
+      raise newException(OSError, "session ended: " & sessionName)
 
     # Cleanup: stop the poller before restoring, so no resize lands after
     # the console went back to cooked mode. The stdin reader may sit in

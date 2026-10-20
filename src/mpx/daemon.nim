@@ -49,6 +49,8 @@ type
 
   Session = object
     name: string
+    directCmd: bool  # argv named a program, not a shell: Ctrl-Z belongs to
+                     # the launching shell, mpx must fake the job control
     pty: Pty
     clients: seq[Client]
     ptyInq: seq[byte]  # posix: input the pty buffer would not take yet;
@@ -81,20 +83,27 @@ type
     tcpError*: string         ## why -l could not bind, "" when it did
 
 when not defined(windows):
-  # Set by the signal handler, polled by the event loop: a signal interrupts
-  # select (EINTR makes it return empty) and the loop condition picks it up.
+  # Set by the signal handler and polled by the event loop. The handler
+  # also pokes a pipe the loop selects on: a signal landing between the
+  # loop's flag check and select(-1) would otherwise leave the daemon
+  # blocked forever with the flag set -- a shutdown it never sees.
   var shutdownRequested: Atomic[bool]
+  var shutdownPipe: array[2, cint] = [cint(-1), cint(-1)]
 
   proc onShutdown(sig: cint) {.noconv.} =
     shutdownRequested.store(true, moRelaxed)
+    var b: byte = 1
+    discard posix.write(shutdownPipe[1], addr b, 1)
 
-proc newSession*(name, cmd: string, args: openArray[string] = []): Session =
+proc newSession*(name, cmd: string, args: openArray[string] = [],
+                directCmd = false): Session =
   ## Built from mpx.nim's main on purpose, never inside runDaemon: the
   ## Windows ConPTY spawn in here must run at main's stack depth. One
   ## frame deeper, inside runDaemon, the spawned child does not get
   ## attached to the pseudoconsole on Win11 26100 in this mingw build.
 
   result.name = name
+  result.directCmd = directCmd
   result.pty = openPty(cmd, args)
   result.running = true
   result.fresh = true
@@ -295,6 +304,13 @@ proc handleClientMsg(session: var Session, i: int,
         session.queueSnapshot(i)
       # Broadcast resize to all clients so they can adapt
       session.broadcast(mkResize, payload)
+  of mkSuspend:
+    # Ctrl-Z in a command session: stop the job the way a tty would
+    when not defined(windows):
+      session.pty.suspend()
+  of mkResume:
+    when not defined(windows):
+      session.pty.resume()
   of mkDetach:
     return false
   else:
@@ -316,7 +332,10 @@ proc feedClient(session: var Session, log: Logger, fd: SocketHandle,
   while true:
     let ci = session.clientIndex(fd)
     if ci < 0:
-      return false
+      # A frame handler between two frames dropped this client (dead
+      # peer inside queueSnapshot/broadcast). It is already unregistered
+      # and closed; false here would make the loop drop it a second time.
+      return true
     if not session.takeClientFrame(ci, kind, payload):
       return true  # no complete frame left: wait for more bytes
     if kind == mkIdent:
@@ -326,19 +345,27 @@ proc feedClient(session: var Session, log: Logger, fd: SocketHandle,
           session.name.toOpenArrayByte(0, session.name.len-1)):
         return false
       continue
-    if kind == mkAttach and session.clients[ci].vetted.not:
-      # Unvetted TCP client: check the session name
-      if payload == session.name.toOpenArrayByte(0, session.name.len-1):
-        session.clients[ci].vetted = true
-        if not session.queueClient(ci, mkAttached, []):
-          return false
-        session.clients[ci].snapshotPending = true
-        log.info "client attached fd=" & $fd.cint & " (tcp)"
-      else:
+    if kind == mkAttach:
+      # TCP clients name the session to get in; unix clients (trusted on
+      # arrival) still send mkAttach for the reply, whose payload says
+      # whether the session is a bare command: the client needs it to
+      # know who owns Ctrl-Z.
+      if not session.clients[ci].vetted and
+          payload != session.name.toOpenArrayByte(0, session.name.len-1):
         let err = "no such session"
         discard session.queueClient(ci, mkError,
           err.toOpenArrayByte(0, err.len-1))
         return false
+      session.clients[ci].vetted = true
+      if not session.queueClient(ci, mkAttached, [byte(session.directCmd)]):
+        return false
+      session.clients[ci].snapshotPending = true
+      # Attaching is fg: a program left stopped by Ctrl-Z continues,
+      # like the shell's fg does for a stopped job.
+      when not defined(windows):
+        if session.directCmd:
+          session.pty.resume()
+      log.info "client attached fd=" & $fd.cint
     else:
       if not session.handleClientMsg(ci, kind, payload):
         return false
@@ -604,7 +631,14 @@ else:
     discard signal(SIGPIPE, SIG_IGN)
     # SIGTERM/SIGINT/SIGHUP must run the cleanup below, not skip it: the
     # default disposition kills the daemon mid-flight and leaves socket,
-    # pid, and lock files behind for attach to trip over.
+    # pid, and lock files behind for attach to trip over. The pipe comes
+    # first: the handler pokes it, and it must exist before any signal
+    # can arrive.
+    if pipe(shutdownPipe) != 0:
+      raise newException(OSError, "pipe failed")
+    for i in {0, 1}:
+      let pfl = fcntl(shutdownPipe[i], F_GETFL)
+      discard fcntl(shutdownPipe[i], F_SETFL, pfl or O_NONBLOCK)
     discard signal(SIGTERM, onShutdown)
     discard signal(SIGINT, onShutdown)
     discard signal(SIGHUP, onShutdown)
@@ -623,13 +657,20 @@ else:
     if endpoint.tcpFd != SocketHandle(-1):
       session.sel.registerHandle(endpoint.tcpFd, {Event.Read}, endpoint.tcpFd)
     session.sel.registerHandle(session.pty.masterFd.SocketHandle, {Event.Read}, session.pty.masterFd.SocketHandle)
+    session.sel.registerHandle(shutdownPipe[0].SocketHandle, {Event.Read}, shutdownPipe[0].SocketHandle)
 
     log.info "listening on " & socketPath(sessionName)
 
     while session.running and not shutdownRequested.load(moRelaxed):
       let events = session.sel.select(-1)
       for ev in events:
-        if ev.fd == endpoint.listenFd.cint:
+        if ev.fd == shutdownPipe[0].cint:
+          # A shutdown signal: drain the poke and fall out
+          var poke: array[64, byte]
+          while posix.read(shutdownPipe[0], addr poke[0], poke.len) > 0:
+            discard
+          break
+        elif ev.fd == endpoint.listenFd.cint:
           # New client on the unix socket: trusted, attach immediately
           let clientFd = accept(endpoint.listenFd, nil, nil)
           if clientFd != SocketHandle(-1):
@@ -685,6 +726,10 @@ else:
             session.dropClient(fd)
 
     # Cleanup
+    if shutdownPipe[0] != -1:
+      discard posix.close(shutdownPipe[0])
+      discard posix.close(shutdownPipe[1])
+      shutdownPipe = [cint(-1), cint(-1)]
     for client in session.clients:
       discard posix.close(client.fd)
     discard posix.close(endpoint.listenFd)

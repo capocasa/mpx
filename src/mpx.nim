@@ -78,6 +78,8 @@ proc main() =
   var sessionName = if rest.len > 0: rest[0] else: ""
   var cmd = if rest.len > 1: rest[1] else: defaultShell()
   var cmdArgs: seq[string]
+  var directCmd = false  # argv named a program: no shell in the session,
+                         # so the client owns Ctrl-Z for the launching shell
 
   case mode
   of "daemon", "new":
@@ -95,6 +97,7 @@ proc main() =
       if dd + 1 < rest.len:
         cmd = rest[dd + 1]
         cmdArgs = rest[(dd + 2) ..^ 1]
+        directCmd = true
     else:
       # Disambiguate: one argument that is an existing command is the
       # command, not a session name. `mpx new htop` runs htop in an
@@ -108,8 +111,10 @@ proc main() =
         cmd = sessionName
         cmdArgs = if tail.len > 1: tail[1 ..^ 1] else: @[]
         sessionName = ""
+        directCmd = true
       else:
         cmdArgs = if tail.len > 2: tail[2 ..^ 1] else: @[]
+        directCmd = rest.len > 1  # `daemon name cmd args...` names a command
     sessionName = resolveSession(sessionName)
   of "attach", "kill":
     if sessionName.len == 0:
@@ -134,7 +139,7 @@ proc main() =
       # program waits in the listen backlog instead of behind the spawn.
       let endpoint = bindEndpoint(sessionName, cfg)
       runDaemon(sessionName, cmd & (if cmdArgs.len > 0: " " & cmdArgs.join(" ") else: ""),
-                cfg, endpoint, newSession(sessionName, cmd, cmdArgs))
+                cfg, endpoint, newSession(sessionName, cmd, cmdArgs, directCmd))
     except CatchableError:
       # Whatever runDaemon managed to claim (lock, port, pid) is
       # garbage now; a name must not stay burned because a daemon died
@@ -161,6 +166,9 @@ proc main() =
       # `--` pins the name: the auto name can BE an existing command,
       # and the daemon re-guessing name-vs-command runs mpx in the pty.
       # Flags ride before it: after `--` everything is a positional.
+      # A shell session re-execs bare: a materialized default shell after
+      # `--` reads back as a command session, and Ctrl-Z would stop mpx
+      # itself instead of the shell's job.
       var args = @[exe, "daemon", sessionName]
       if cfg.listen.len > 0:
         args.add(["-l", cfg.listen])
@@ -168,9 +176,10 @@ proc main() =
         args.add(["-p", $opts.port])
       if opts.log:
         args.add("--log")
-      args.add("--")
-      args.add(cmd)
-      args.add(cmdArgs)
+      if directCmd:
+        args.add("--")
+        args.add(cmd)
+        args.add(cmdArgs)
       when defined(windows):
         # Same detachment the posix fork path earns with setsid: no
         # console at all, free of any job the spawning terminal put us
