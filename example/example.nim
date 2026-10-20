@@ -644,31 +644,33 @@ discard execCmd(bin & " kill zdemo 2>/dev/null")
 
 # 3) Ctrl-Z in a shell session still belongs to the session's own job
 #    control: the byte is forwarded, the inner bash stops ITS job, the
-#    attach client itself must keep running
-discard startProcess(bin, args=["daemon", "shdemo"],
-                     env={"SHELL": "/bin/bash"}.newStringTable,
-                     options={poDaemon})
-doAssert sockUp("shdemo"), "shdemo daemon never started"
-var shellJob = spawnPty("bash --norc")
-discard ptyExpect(shellJob, "$")
-ptySend(shellJob, bin & " attach shdemo\n")
-discard ptyExpect(shellJob, "$")     # the inner shell's own prompt
-ptySend(shellJob, "sleep 5\n")
-sleep(400)
-ptySend(shellJob, "\x1a")
-sleep(200)                          # the byte is a lone keypress for the client
-discard ptyExpect(shellJob, "Stopped")  # inner bash's job report
-# the client never stopped: the inner shell still answers through it
-ptySend(shellJob, "echo INNER_ALIVE\n")
-discard ptyExpect(shellJob, "INNER_ALIVE", times = 2)
-ptySend(shellJob, "\x07")            # detach from the shell session
-sleep(300)
-ptySend(shellJob, "echo G_DONE\n")
-discard ptyExpect(shellJob, "G_DONE", times = 2)
-ptySend(shellJob, "exit\n")
-reap(shellJob.pid)
-discard close(shellJob.master)
-echo "example: Ctrl-Z passthrough in shell sessions verified"
+#    attach client itself must keep running. macOS: gated with the stop
+#    tests above, same tty hold around a stopped job's output.
+when not defined(macosx):
+  discard startProcess(bin, args=["daemon", "shdemo"],
+                       env={"SHELL": "/bin/bash"}.newStringTable,
+                       options={poDaemon})
+  doAssert sockUp("shdemo"), "shdemo daemon never started"
+  var shellJob = spawnPty("bash --norc")
+  discard ptyExpect(shellJob, "$")
+  ptySend(shellJob, bin & " attach shdemo\n")
+  discard ptyExpect(shellJob, "$")     # the inner shell's own prompt
+  ptySend(shellJob, "sleep 5\n")
+  sleep(400)
+  ptySend(shellJob, "\x1a")
+  sleep(200)                          # the byte is a lone keypress for the client
+  discard ptyExpect(shellJob, "Stopped")  # inner bash's job report
+  # the client never stopped: the inner shell still answers through it
+  ptySend(shellJob, "echo INNER_ALIVE\n")
+  discard ptyExpect(shellJob, "INNER_ALIVE", times = 2)
+  ptySend(shellJob, "\x07")            # detach from the shell session
+  sleep(300)
+  ptySend(shellJob, "echo G_DONE\n")
+  discard ptyExpect(shellJob, "G_DONE", times = 2)
+  ptySend(shellJob, "exit\n")
+  reap(shellJob.pid)
+  discard close(shellJob.master)
+  echo "example: Ctrl-Z passthrough in shell sessions verified"
 discard execCmd(bin & " kill shdemo 2>/dev/null")
 
 # 4) Resize: the client's SIGWINCH reaches the session's pty
